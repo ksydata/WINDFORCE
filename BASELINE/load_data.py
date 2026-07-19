@@ -18,9 +18,9 @@ def extract_data():
             print(f"'{zip_file}' 압축 해제 중...")
             with zipfile.ZipFile(zip_file, 'r') as zip_ref:
                 zip_ref.extractall('.')
-            print(f"✓ '{zip_file}' 압축 해제 완료!")
+            print(f"✅ '{zip_file}' 압축 해제 완료!")
         else:
-            print(f"⚠️  '{zip_file}' 파일을 찾을 수 없습니다.")
+            print(f"❌ '{zip_file}' 파일을 찾을 수 없습니다.")
     
     print("\n모든 데이터 파일 압축 해제 완료!")
 
