@@ -1,0 +1,18 @@
+# 대용량 데이터 파일 제외
+TRAIN/*.csv
+TEST/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# macOS
+.DS_Store
