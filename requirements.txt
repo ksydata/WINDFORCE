@@ -1,0 +1,9 @@
+# Core libraries used by the notebook / load_data.py
+numpy==2.5.1
+pandas==3.0.5
+scikit-learn==1.9.0
+openpyxl==3.1.5
+
+# Jupyter tooling to open and run the .ipynb inside the .venv
+jupyter==1.1.1
+ipykernel==7.3.0
