@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V126 vs U136 전체 스펙 비교</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Noto Sans KR', sans-serif;
+    background: #F5F7FA;
+    color: #2D3748;
+    padding: 24px 16px;
+  }
+
+  .container { max-width: 960px; margin: 0 auto; }
+
+  /* Header */
+  .header {
+    background: linear-gradient(135deg, #0B1D35 0%, #1A365D 100%);
+    border-radius: 14px;
+    padding: 30px 32px;
+    margin-bottom: 20px;
+    color: #fff;
+  }
+  .header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 6px;
+  }
+  .header .subtitle {
+    font-size: 13px;
+    color: rgba(255,255,255,0.55);
+    line-height: 1.5;
+  }
+  .stats {
+    display: flex;
+    gap: 28px;
+    margin-top: 20px;
+    flex-wrap: wrap;
+  }
+  .stat-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .stat-num {
+    font-size: 24px;
+    font-weight: 700;
+  }
+  .stat-label {
+    font-size: 12px;
+    color: rgba(255,255,255,0.45);
+  }
+
+  /* Controls */
+  .controls {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .search-input {
+    flex: 1;
+    min-width: 180px;
+    padding: 9px 14px;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    color: #2D3748;
+    background: #fff;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .search-input:focus { border-color: #0077B6; }
+  .search-input::placeholder { color: #A0AEC0; }
+
+  .toggle-btn {
+    padding: 9px 18px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    border: 1px solid #E2E8F0;
+    background: #fff;
+    color: #718096;
+    transition: all 0.2s;
+  }
+  .toggle-btn.active {
+    border: 2px solid #E85D04;
+    background: #FFF3E8;
+    color: #E85D04;
+  }
+
+  /* Table */
+  .table-wrap {
+    border: 1px solid #E2E8F0;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .table-header {
+    display: grid;
+    grid-template-columns: 36px 1.2fr 1fr 1fr;
+    padding: 11px 18px;
+    background: #F7F9FB;
+    border-bottom: 1px solid #E2E8F0;
+    font-size: 11px;
+    font-weight: 700;
+    color: #A0AEC0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .col-u136 { color: #0077B6; }
+  .col-v126 { color: #7209B7; }
+
+  /* Category */
+  .category {
+    background: #F0F4F8;
+    padding: 10px 18px;
+    border-top: 1px solid #E2E8F0;
+    border-bottom: 1px solid #E2E8F0;
+    font-size: 13px;
+    font-weight: 700;
+    color: #1A1A2E;
+  }
+
+  /* Row */
+  .row {
+    display: grid;
+    grid-template-columns: 36px 1.2fr 1fr 1fr;
+    padding: 10px 18px;
+    font-size: 13px;
+    line-height: 1.55;
+    border-bottom: 1px solid #F0F4F8;
+    border-left: 3px solid transparent;
+    transition: background 0.15s;
+  }
+  .row:hover { background: #FAFBFC; }
+  .row:last-child { border-bottom: none; }
+  .row.highlight {
+    background: #FFFAF0;
+    border-left-color: #F0C040;
+  }
+  .row.highlight:hover { background: #FFF5E0; }
+
+  .dot-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    opacity: 0.75;
+  }
+  .dot.diff { background: #E85D04; }
+  .dot.same { background: #06A77D; }
+
+  .spec-name { font-weight: 500; color: #1A1A2E; }
+  .spec-val { color: #4A5568; }
+  .spec-val.na { color: #CBD5E0; font-style: italic; }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    gap: 24px;
+    margin-top: 14px;
+    padding: 12px 18px;
+    background: #F7F9FB;
+    border-radius: 8px;
+    font-size: 12px;
+    color: #718096;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    opacity: 0.75;
+  }
+  .legend-bar {
+    width: 3px;
+    height: 14px;
+    border-radius: 2px;
+    background: #F0C040;
+  }
+
+  /* Hidden */
+  .hidden { display: none !important; }
+
+  /* Responsive */
+  @media (max-width: 640px) {
+    .header { padding: 22px 20px; }
+    .header h1 { font-size: 18px; }
+    .table-header, .row { grid-template-columns: 28px 1fr 1fr 1fr; padding: 8px 10px; font-size: 11px; }
+    .category { padding: 8px 10px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <!-- Header -->
+  <div class="header">
+    <h1>V126-3.45MW vs U136 전체 스펙 비교</h1>
+    <div class="subtitle">가덕산 풍력발전단지 (Vestas V126) · 유니슨 U136 — SCADA 데이터 분석 참조용</div>
+    <div class="stats">
+      <div class="stat-item">
+        <span class="stat-num" style="color:#fff" id="stat-total">39</span>
+        <span class="stat-label">전체 항목</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-num" style="color:#E85D04" id="stat-diff">33</span>
+        <span class="stat-label">차이 항목</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-num" style="color:#F0C040" id="stat-key">14</span>
+        <span class="stat-label">핵심 차이</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <input type="text" class="search-input" id="searchInput" placeholder="항목 검색..." oninput="filterTable()">
+    <button class="toggle-btn" id="diffToggle" onclick="toggleDiffOnly()">차이만 보기</button>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap" id="specTable">
+    <div class="table-header">
+      <div></div>
+      <div>항목</div>
+      <div class="col-u136">U136 (유니슨)</div>
+      <div class="col-v126">V126 (베스타스)</div>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#E85D04"></div> 차이 있음</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#06A77D"></div> 동일</div>
+    <div class="legend-item"><div class="legend-bar"></div> SCADA 분석 시 핵심 차이</div>
+  </div>
+</div>
+
+<script>
+const DATA = [
+  { category: "운전 데이터 (Operational)", items: [
+    { spec: "제조사", u136: "유니슨 (Unison)", v126: "베스타스 (Vestas)", diff: true },
+    { spec: "모델명", u136: "U136", v126: "V126-3.45 MW", diff: true },
+    { spec: "정격 출력", u136: "4,200 kW", v126: "3,450 kW", diff: true, key: true },
+    { spec: "출력 제어 방식", u136: "—", v126: "Pitch regulated with variable speed", diff: true },
+    { spec: "Power Optimised 모드", u136: "—", v126: "최대 3.6 MW (사이트별)", diff: true, key: true },
+    { spec: "Load Optimised 모드", u136: "—", v126: "최소 3.0 MW", diff: true, key: true },
+    { spec: "Cut-in 풍속", u136: "3 m/s", v126: "3 m/s", diff: false },
+    { spec: "Cut-out 풍속", u136: "22 m/s", v126: "22.5 m/s", diff: true, key: true },
+    { spec: "Re Cut-in 풍속", u136: "미기재", v126: "20 m/s", diff: true, key: true },
+    { spec: "Wind class", u136: "IEC IA", v126: "IEC IIB / IEC IIA", diff: true, key: true },
+    { spec: "운전 온도 범위", u136: "-15°C ~ 40°C", v126: "-20°C ~ +45°C", diff: true },
+    { spec: "디레이팅 (De-rating)", u136: "미기재", v126: "30°C 이상 디레이팅", diff: true, key: true },
+    { spec: "저온 운전 옵션", u136: "—", v126: "-30°C까지 (옵션)", diff: true },
+    { spec: "최대 소음", u136: "105.9 dB(A)", v126: "104.4 / 107.3 dB(A)", diff: true },
+  ]},
+  { category: "로터 / 블레이드 (Rotor / Blade)", items: [
+    { spec: "로터 직경", u136: "136 m", v126: "126 m", diff: true, key: true },
+    { spec: "수풍 면적 (Swept area)", u136: "14,470 m²", v126: "12,469 m²", diff: true, key: true },
+    { spec: "블레이드 길이", u136: "66.5 m", v126: "61.7 m", diff: true },
+    { spec: "블레이드 최대 시위 (Max. chord)", u136: "미기재", v126: "4.0 m", diff: true },
+    { spec: "에어 브레이크", u136: "미기재", v126: "Full blade feathering (3 pitch cylinders)", diff: true, key: true },
+  ]},
+  { category: "타워 (Tower)", items: [
+    { spec: "타워 높이", u136: "95 / 117 m (mhh)", v126: "87 / 117 / 137 / 147 / 149 / 166 m", diff: true },
+    { spec: "가덕산 적용 높이 (추정)", u136: "—", v126: "117 m (IEC IIB)", diff: true },
+  ]},
+  { category: "나셀 / 허브 (Nacelle / Hub)", items: [
+    { spec: "나셀 크기 (운송 시)", u136: "L14.7 × W4.5 × H4.2 m", v126: "L12.8 × W4.2 × H3.4 m", diff: true },
+    { spec: "나셀 설치 높이 (CoolerTop 포함)", u136: "미기재", v126: "6.9 m", diff: true },
+    { spec: "허브 크기 (운송 시)", u136: "L4.5 × W3.9 × H4.2 m", v126: "H3.8 × W3.8 × L5.5 m", diff: true },
+    { spec: "최대 운송 중량", u136: "78 ton", v126: "70 metric tonnes", diff: true },
+  ]},
+  { category: "전기 시스템 (Electrical)", items: [
+    { spec: "주파수", u136: "50 / 60 Hz", v126: "50 / 60 Hz", diff: false },
+    { spec: "발전기", u136: "Permanent magnet, Synchronous", v126: "미기재 (별도 시트)", diff: true },
+    { spec: "컨버터", u136: "Full capacity", v126: "Full scale", diff: false },
+    { spec: "피치 시스템", u136: "Electric motor drive", v126: "3 pitch cylinders (유압)", diff: true, key: true },
+  ]},
+  { category: "구동계 (Drivetrain)", items: [
+    { spec: "메인 베어링", u136: "Dual, cylindrical and tapered roller", v126: "미기재", diff: true },
+    { spec: "기어박스", u136: "2 planetary + 1 helical stages", v126: "2 planetary + 1 helical stage", diff: false },
+  ]},
+  { category: "터빈 옵션 (Turbine Options) — V126만 해당", items: [
+    { spec: "High Wind Operation", u136: "—", v126: "✓", diff: true },
+    { spec: "Condition Monitoring System", u136: "—", v126: "✓", diff: true },
+    { spec: "Ice Detection", u136: "—", v126: "✓ (Vestas Ice Detection)", diff: true, key: true },
+    { spec: "De-Icing", u136: "—", v126: "✓ (Vestas De-Icing)", diff: true, key: true },
+    { spec: "Fire Suppression", u136: "—", v126: "✓", diff: true },
+    { spec: "Shadow Detection", u136: "—", v126: "✓", diff: true },
+    { spec: "Bat Protection System", u136: "—", v126: "✓", diff: true },
+    { spec: "Service Personnel Lift", u136: "—", v126: "✓", diff: true },
+    { spec: "Aviation Lights", u136: "—", v126: "✓", diff: true },
+    { spec: "Aviation Markings on Blades", u136: "—", v126: "✓", diff: true },
+  ]},
+  { category: "지속가능성 (Sustainability) — V126만 해당", items: [
+    { spec: "탄소 발자국", u136: "미기재", v126: "6.4g CO₂e/kWh", diff: true },
+    { spec: "에너지 투자 회수 기간", u136: "미기재", v126: "6.5 개월", diff: true },
+    { spec: "에너지 수명 회수 배수", u136: "미기재", v126: "37배", diff: true },
+    { spec: "재활용률", u136: "미기재", v126: "87.5%", diff: true },
+  ]},
+];
+
+let diffOnly = false;
+
+function buildTable() {
+  const table = document.getElementById('specTable');
+  // Remove old rows (keep header)
+  const header = table.querySelector('.table-header');
+  table.innerHTML = '';
+  table.appendChild(header);
+
+  const search = document.getElementById('searchInput').value.toLowerCase();
+
+  let visibleTotal = 0;
+
+  DATA.forEach(cat => {
+    const filtered = cat.items.filter(item => {
+      const matchSearch = !search ||
+        item.spec.toLowerCase().includes(search) ||
+        item.u136.toLowerCase().includes(search) ||
+        item.v126.toLowerCase().includes(search);
+      const matchDiff = !diffOnly || item.diff;
+      return matchSearch && matchDiff;
+    });
+
+    if (filtered.length === 0) return;
+
+    // Category header
+    const catDiv = document.createElement('div');
+    catDiv.className = 'category';
+    catDiv.textContent = cat.category;
+    table.appendChild(catDiv);
+
+    // Rows
+    filtered.forEach((item, idx) => {
+      visibleTotal++;
+      const row = document.createElement('div');
+      row.className = 'row' + (item.key ? ' highlight' : '');
+
+      const isNa = (val) => val === '—' || val === '미기재' || val.includes('미기재');
+
+      row.innerHTML = `
+        <div class="dot-cell"><div class="dot ${item.diff ? 'diff' : 'same'}"></div></div>
+        <div class="spec-name">${item.spec}</div>
+        <div class="spec-val${isNa(item.u136) ? ' na' : ''}">${item.u136}</div>
+        <div class="spec-val${isNa(item.v126) ? ' na' : ''}">${item.v126}</div>
+      `;
+      table.appendChild(row);
+    });
+  });
+}
+
+function filterTable() {
+  buildTable();
+}
+
+function toggleDiffOnly() {
+  diffOnly = !diffOnly;
+  const btn = document.getElementById('diffToggle');
+  btn.className = 'toggle-btn' + (diffOnly ? ' active' : '');
+  btn.textContent = diffOnly ? '✓ 차이만 보기' : '차이만 보기';
+  buildTable();
+}
+
+// Init
+buildTable();
+</script>
+</body>
+</html>
