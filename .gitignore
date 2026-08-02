@@ -4,6 +4,7 @@ TEST/*.csv
 TRAIN/
 TEST/
 agg/
+prep/
 
 # Python
 __pycache__/
