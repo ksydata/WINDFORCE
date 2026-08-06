@@ -5,10 +5,36 @@
 # datasetBuilder, metrics, results를 self로 계속 들고 있으므로,
 # 나중에 특정 그룹만 다시 실행하거나 중간 결과를 다시 꺼내보기 쉬워진다.
 
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+
+from .BaselineModels import BaselineModels
+from .LSTMPipeline import LSTMPipeline, SEQ_LEN
+from ..EvaluationMetrics import EvaluationMetrics, RATED_CAPACITY_KW
+
+GROUPS = [1, 2, 3]
+# KPX 평가 그룹 번호 목록
+
+
+def _featureCols(df: pd.DataFrame, target_col: str) -> list:
+    """타깃 및 식별자 컬럼을 제외한 순수 피처 컬럼 목록을 반환하는 헬퍼 함수
+
+    Args:
+        - df: 그룹별 피처+타깃이 포함된 DataFrame
+        - target_col: 제외할 타깃 컬럼명 (예: "kpx_group_1")
+
+    Logic:
+        - kst_dtm / forecast_kst_dtm : 시각 식별자 → 피처에 포함하면 미래 정보 누수 위험
+        - kpx_group_*: 다른 그룹 타깃도 함께 존재하면 전부 제외 (그룹 간 누수 방지)
+    """
+    exclude = {"kst_dtm", "forecast_kst_dtm"} | {f"kpx_group_{i}" for i in range(1, 4)}
+    return [c for c in df.columns if c not in exclude]
+
+
 class GroupExperimentRunner:
     """그룹별(KPX_1/2/3) Persistence/SVR/LSTM 학습·평가를 총괄하는 클래스"""
 
-    def __init__(self, datasetBuilder: WindforceDatasetBuilder,
+    def __init__(self, datasetBuilder,
                  metrics: EvaluationMetrics, groups: list = GROUPS,
                  testRatio: float = 0.2, seqLen: int = SEQ_LEN):
         """
@@ -47,7 +73,7 @@ class GroupExperimentRunner:
             - MinMaxScaler는 반드시 train 구간에만 fit해서,
               test 구간의 통계(최솟값/최댓값)가 스케일링 파라미터에 섞이지 않도록 한다.
         """
-        featCols = WindforceDatasetBuilder.featureCols(groupDf)
+        featCols = _featureCols(groupDf, targetCol)
         # kst_dtm, kpx_group_* 를 제외한 나머지를 입력 피처로 사용
 
         X_all = groupDf[featCols].values
@@ -89,13 +115,13 @@ class GroupExperimentRunner:
         # ---------------------------------------------------------------
         # (1) Persistence 베이스라인
         # ---------------------------------------------------------------
-        persPred = BaselineModels.persistenceForecast(y_test)
-        # 직전 시점 값을 그대로 예측값으로 사용
+        persPred = BaselineModels.persistenceForecast(y_test)[1:]
+        # np.roll로 한 칸 밀면 index 0은 wrap-around → 버리고 [1:]부터 사용
         groupResults.append({
             "group": group,
             "model_name": "Persistence",
-            **self.metrics.summarize(persPred, y_test, group),
-            # Step5 EvaluationMetrics.summarize로 nmae/ficr/score 한 번에 계산해 dict에 병합
+            **{k: v for k, v in self.metrics.summarize(persPred, y_test[1:], group).items() if k != "group"},
+            # group 키는 위에서 이미 추가했으므로 summarize 반환값에서 제외
         })
 
         # ---------------------------------------------------------------
@@ -110,7 +136,7 @@ class GroupExperimentRunner:
         groupResults.append({
             "group": group,
             "model_name": "SVR",
-            **self.metrics.summarize(svrPred, y_test, group),
+            **{k: v for k, v in self.metrics.summarize(svrPred, y_test, group).items() if k != "group"},
         })
 
         # ---------------------------------------------------------------
@@ -136,7 +162,7 @@ class GroupExperimentRunner:
         groupResults.append({
             "group": group,
             "model_name": "LSTM",
-            **self.metrics.summarize(lstmPred, yTestAligned, group),
+            **{k: v for k, v in self.metrics.summarize(lstmPred, yTestAligned, group).items() if k != "group"},
         })
 
         return groupResults

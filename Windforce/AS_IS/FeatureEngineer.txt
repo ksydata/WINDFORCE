@@ -1,0 +1,71 @@
+# [AS-IS] 
+# Step 4. 데이터 전처리 및 시각화 
+
+# SCADA 데이터와 Power Curve 비교
+# https://ihatenumber.tistory.com/entry/
+
+import pandas as pd
+import numpy as np
+from typing import List
+
+class FeatureEngineer:
+    """데이터 전처리를 담당하는 클래스"""
+
+    def __init__(self):
+        pass
+        # self.data = dataLoader
+        # 결합도 문제 : WindforceDataLoader 인스턴스를 받아서 내부 속성으로 저장
+        # loader[["ldaps_train", "gfs_train", "train_labels", "scada_vestas_train", "scada_unison_train"]]
+        # 정규화 이전의 문제
+        # 이상치와 결측치 처리 방식 결정
+    
+    def computeWindSpeed(self, u: pd.Series, v: pd.Series) -> pd.Series:
+        """기상예보 데이터의 u(동쪽: +, 서쪽: -), v(북쪽: +, 남쪽: -) 성분으로부터 풍속을 계산하는 메서드"""
+        windSpeed = np.sqrt(u**2 + v**2)
+        return windSpeed
+        # 풍속, 풍향을 반대로 u, v(동서, 남북) 성분으로 변환 가능
+
+    def computeWindDirection(self, u: pd.Series, v: pd.Series) -> pd.Series:
+        """기상예보 데이터의 u(동쪽: +, 서쪽: -), v(북쪽: +, 남쪽: -) 성분으로부터 풍향을 계산하는 메서드"""
+        windDegree = np.degrees( np.arctan2(-u, -v) ) 
+        # 풍향은 북쪽 기준 시계방향으로 측정되므로, arctan2(역탄젠트)를 사용하여 각도를 계산 (-180 ~ 180도 범위)
+        # 동풍(u = -1, v = 0)일 때 90도, 남풍(u = 0, v = 1)일 때 180도, 서쪽(u = 1, v = 0)일 때 270도\
+        # 출발하는 방향을 나타내는 점에 유의
+        
+        windDirection = (windDegree + 360) % 360
+        # 풍향을 0~360도 범위로 변환 (음수 각도를 쓰지 않고 양수화)
+        return windDirection
+        # np.cos(np.radians(windDirection)), np.sin(np.radians(windDirection))
+
+    def transformWindDirection(self, df: pd.DataFrame, wind_direction_cols: List[str]) -> pd.DataFrame:
+        """풍향(Wind Direction) 전처리 메서드
+        
+        Logics: 
+            0도와 360도의 불연속성 해결 및 주기성 반영(sin, cos 변환 등) 
+            요 편차/제어 고려
+        """
+        df = df.copy()
+        for col in wind_direction_cols:
+            # 풍향 컬럼마다 순회
+            radian = np.radians(df[col])
+            # 기상학적 각도 풍향을 삼각함수용 라디안 단위로 변환
+
+            df[f"{col}_cos"] = np.cos(radian)
+            df[f"{col}_sin"] = np.sin(radian)
+            # 머신러닝의 0도-360도 연속성 인지를 위한 주기성 인코딩 (Sin, Cos)
+            # 원본 0~360도 스케일은 수치 왜곡을 일으키므로 아래 2개 변수로 대체
+
+            # df = df.drop(columns = [col]) 
+            # 필요시 주석 해제
+        
+        return df
+
+    def calculatePhsyicalLogic(self, df: pd.DataFrame) -> pd.DataFrame:
+        """공기밀도 계산 메서드"""
+        return df
+    
+    def interpolateTimeVariable(self, df: pd.DataFrame, time_col: str) -> pd.DataFrame:
+        """시간 관련 변수 순환인코딩/보간 등 전처리 메서드"""
+        # 베스타스 - 이상치가 너무 많음
+        # 유니슨 - 결측값이 너무 많음
+        return df

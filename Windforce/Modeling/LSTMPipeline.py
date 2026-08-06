@@ -1,8 +1,13 @@
 # Step 6.2. LSTMPipeline: LSTM 모델의 생성·학습·예측을 하나로 묶어 관리하는 클래스
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 import numpy as np
+import sys, os
+
+# ScoreLossFunction을 Modeling 패키지 밖(부모 패키지)에서 가져온다
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from Windforce.ScoreLossFunction import ScoreLossFunction
 
 # 기존 trainLSTM/predictLSTM 함수는 model 객체를 인자로 주고받는 구조였는데,
 # 이렇게 하면 "이 model이 어느 그룹용으로 학습된 것인지" 호출부에서 매번
@@ -11,6 +16,77 @@ import numpy as np
 # "학습된 모델"이라는 개념 자체를 하나의 객체로 캡슐화한다.
 
 SEQ_LEN = 24   # 최근 24시간 시퀀스로 다음 시점 예측
+
+
+class SequenceDataset(Dataset):
+    """슬라이딩 윈도우 방식으로 (시퀀스, 타깃) 쌍을 만드는 PyTorch Dataset 클래스
+
+    Args:
+        - X: 정규화된 피처 배열, shape = (N, n_features)
+        - y: 타깃 배열(실제 발전량 kWh), shape = (N, )
+        - seq_len: 슬라이딩 윈도우 길이 (과거 몇 시간을 볼지)
+
+    Logic:
+        - i번째 샘플 = X[i : i+seq_len] 을 입력으로, y[i+seq_len] 을 정답으로 사용한다
+        - 앞쪽 seq_len개 시점은 정답을 만들 수 없어 버려진다
+          → predict 후 y_test도 y_test[seq_len:] 로 잘라서 비교해야 한다
+    """
+
+    def __init__(self, X: np.ndarray, y: np.ndarray, seq_len: int = SEQ_LEN):
+        self.X = torch.tensor(X, dtype=torch.float32)
+        # 입력 피처를 float32 텐서로 변환
+        self.y = torch.tensor(y, dtype=torch.float32)
+        # 타깃(발전량)을 float32 텐서로 변환
+        self.seq_len = seq_len
+        # 슬라이딩 윈도우 길이
+
+    def __len__(self) -> int:
+        # seq_len개를 소비하고 나서 예측 가능한 타임스텝 수
+        return len(self.X) - self.seq_len
+
+    def __getitem__(self, idx: int):
+        x_seq = self.X[idx : idx + self.seq_len]
+        # 인덱스 idx부터 seq_len 길이의 입력 시퀀스 슬라이싱
+        y_target = self.y[idx + self.seq_len]
+        # 시퀀스의 바로 다음 시점을 타깃으로 사용
+        return x_seq, y_target
+
+
+class _LSTMModel(nn.Module):
+    """LSTM 기반 시계열 회귀 모델 (LSTMPipeline 내부 전용)
+
+    Args:
+        - n_features: 입력 피처 수 (X_train.shape[1])
+        - hidden_size: LSTM 은닉 상태 차원 수
+        - num_layers: 스택 LSTM 레이어 수
+
+    Logic:
+        - LSTM → 마지막 시퀀스 출력만 추출 → FC → 스칼라
+        - 발전량은 음수가 될 수 없으므로 출력에 ReLU를 적용한다
+    """
+
+    def __init__(self, n_features: int, hidden_size: int = 64, num_layers: int = 2):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=n_features,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            # batch_first=True: 입력 shape = (batch, seq_len, n_features)
+        )
+        self.fc = nn.Linear(hidden_size, 1)
+        # LSTM 마지막 출력을 스칼라 발전량 예측값으로 선형 변환
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out, _ = self.lstm(x)
+        # out shape = (batch, seq_len, hidden_size)
+        last_out = out[:, -1, :]
+        # 마지막 시퀀스 위치의 hidden state만 추출 (N→1 예측)
+        pred = self.fc(last_out).squeeze(-1)
+        # shape = (batch, )
+        return torch.relu(pred)
+        # 발전량은 음수 불가 → ReLU로 하한을 0으로 보장
+
 
 class LSTMPipeline:
     """LSTM 모델의 생성·학습·예측을 하나로 묶어 관리하는 클래스
@@ -65,7 +141,7 @@ class LSTMPipeline:
         # shuffle=True: 학습 시엔 배치 순서를 섞어 일반화 성능 향상
         # (단, 각 시퀀스 "내부"의 시간 순서는 SequenceDataset에서 이미 고정되어 있으므로 안전함)
 
-        self.model = LSTMPipeline(
+        self.model = _LSTMModel(
             n_features=X_train.shape[1],
             # 입력 피처 개수는 X_train의 컬럼 수로 자동 결정 (하드코딩 안 함)
             hidden_size=self.hidden_size,
