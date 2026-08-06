@@ -63,7 +63,7 @@ class WindforceDataLoader:
             # 특정 풍력단지(3개 그룹)의 향후 발전량을 예측하는 AI 모델을 통한
             # 평가 기간의 KPX 3그룹별 예측 발전량을 지정된 형식에 맞게 입력하여 제출
 
-            "kpx_info": f"{self.root_train}/kpx_info.csv", # [v]
+            "kpx_info": f"{self.root}/INFO/kpx_info.csv", # [v]
 
             # "submission_schema": f"{self.root}/submission.csv",
             # 제출용 sample 양식
