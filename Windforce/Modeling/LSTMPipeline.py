@@ -1,9 +1,11 @@
 # Step 6.2. LSTMPipeline: LSTM 모델의 생성·학습·예측을 하나로 묶어 관리하는 클래스
+import copy
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 import sys, os
+from typing import Optional
 
 # ScoreLossFunction을 Modeling 패키지 밖(부모 패키지)에서 가져온다
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -84,8 +86,8 @@ class _LSTMModel(nn.Module):
         # 마지막 시퀀스 위치의 hidden state만 추출 (N→1 예측)
         pred = self.fc(last_out).squeeze(-1)
         # shape = (batch, )
-        return torch.relu(pred)
-        # 발전량은 음수 불가 → ReLU로 하한을 0으로 보장
+        return torch.sigmoid(pred)
+        # 발전량을 설비용량 대비 이용률(0~1)로 학습하므로 sigmoid로 범위를 보장한다.
 
 
 class LSTMPipeline:
@@ -99,7 +101,9 @@ class LSTMPipeline:
 
     def __init__(self, capacity_kw: float, seq_len: int = SEQ_LEN,
                  hidden_size: int = 64, num_layers: int = 2,
-                 epochs: int = 30, lr: float = 1e-3):
+                 epochs: int = 80, lr: float = 1e-3,
+                 warmup_epochs: int = 15, loss_k: float = 40.0,
+                 regression_weight: float = 0.75, patience: int = 12):
         """
         Args:
             - capacity_kw: 이 파이프라인이 다루는 그룹의 설비용량(kW).
@@ -117,13 +121,20 @@ class LSTMPipeline:
         # LSTMPipeline 생성 시 그대로 전달
         self.epochs = epochs
         self.lr = lr
-        # 학습 루프(fit)에서 사용할 하이퍼파라미터
+        self.warmup_epochs = warmup_epochs
+        self.loss_k = loss_k
+        self.regression_weight = regression_weight
+        self.patience = patience
+        self.history: list[dict] = []
+        # 정규화 타깃 회귀 신호를 유지해 FICR 근사 손실의 포화를 보완한다.
 
         self.model: nn.Module | None = None
         # 학습 전에는 None. fit()이 끝나야 학습된 LSTMPipeline 인스턴스가 여기 저장됨.
         # predict()에서 이 self.model이 None이면 아직 학습이 안 됐다는 뜻이므로 에러를 낸다.
 
-    def fit(self, X_train: np.ndarray, y_train: np.ndarray) -> "LSTMPipeline":
+    def fit(self, X_train: np.ndarray, y_train: np.ndarray,
+            X_val: Optional[np.ndarray] = None, y_val: Optional[np.ndarray] = None,
+            metrics=None, group: Optional[int] = None) -> "LSTMPipeline":
         """학습 데이터로 LSTM을 학습시키는 메서드
 
         Args:
@@ -135,7 +146,13 @@ class LSTMPipeline:
               이렇게 하면 `pipeline = LSTMPipeline(...).fit(X, y)`처럼
               생성과 학습을 한 줄로 이어 쓸 수 있다 (메서드 체이닝).
         """
-        trainDs = SequenceDataset(X_train, y_train, seq_len=self.seq_len)
+        if len(X_train) <= self.seq_len:
+            raise ValueError("학습 데이터 행 수는 seq_len보다 커야 합니다.")
+
+        # kWh 원 단위 타깃을 설비용량 대비 이용률로 바꾼다. 모델은 0~1 범위만
+        # 예측하고, ScoreLossFunction에는 다시 kWh로 역변환해 대회 정의를 유지한다.
+        y_train_norm = np.clip(np.asarray(y_train, dtype=np.float32) / self.capacity_kw, 0.0, 1.0)
+        trainDs = SequenceDataset(X_train, y_train_norm, seq_len=self.seq_len)
         # 슬라이딩 윈도우 시퀀스 데이터셋 생성 (Step6에서 정의한 클래스 그대로 재사용)
         trainLoader = DataLoader(trainDs, batch_size=64, shuffle=True)
         # shuffle=True: 학습 시엔 배치 순서를 섞어 일반화 성능 향상
@@ -152,8 +169,15 @@ class LSTMPipeline:
 
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         # Adam optimizer로 self.model의 모든 파라미터를 업데이트하도록 설정
-        criterion = ScoreLossFunction(capacity_kw=self.capacity_kw)
-        # Step5에서 만든 손실함수를 그대로 재사용. capacity_kw는 이 그룹 전용 값.
+        scoreCriterion = ScoreLossFunction(capacity_kw=self.capacity_kw, k=self.loss_k)
+        regressionCriterion = nn.SmoothL1Loss(beta=0.05)
+        # FICR 근사만 단독 사용하면 큰 초기 오차에서 sigmoid가 포화된다. 따라서
+        # 이용률 기반 SmoothL1을 계속 섞어 입력 의존적인 회귀 기울기를 보장한다.
+
+        bestState = None
+        bestScore = -float("inf")
+        noImprove = 0
+        self.history = []
 
         self.model.train()
         # dropout/batchnorm 등이 있다면 학습모드로 전환 (현재 구조엔 없지만 관례상 명시)
@@ -166,11 +190,15 @@ class LSTMPipeline:
                 optimizer.zero_grad()
                 # 이전 스텝에서 계산된 gradient가 남아있지 않도록 초기화
 
-                pred = self.model(xb)
+                predNorm = self.model(xb)
                 # forward pass: 배치 입력 xb를 모델에 통과시켜 예측값 계산
 
-                loss = criterion(pred, yb)
-                # Step5 ScoreLossFunction으로 이번 배치의 손실 계산
+                regressionLoss = regressionCriterion(predNorm, yb)
+                if epoch < self.warmup_epochs:
+                    loss = regressionLoss
+                else:
+                    scoreLoss = scoreCriterion(predNorm * self.capacity_kw, yb * self.capacity_kw)
+                    loss = self.regression_weight * regressionLoss + (1 - self.regression_weight) * scoreLoss
 
                 loss.backward()
                 # 역전파: loss에 대한 모든 파라미터의 gradient 계산
@@ -185,15 +213,36 @@ class LSTMPipeline:
             epochLoss /= len(trainLoader.dataset)
             # 전체 학습 데이터 개수로 나눠 "이번 epoch 전체 평균 loss"를 구함
 
-            print(f"  epoch {epoch + 1}/{self.epochs} - loss(1-총점 근사) {epochLoss:.5f}")
-            # 학습 진행 상황을 매 epoch마다 출력
+            record = {"epoch": epoch + 1, "train_loss": epochLoss}
+            phase = "warmup" if epoch < self.warmup_epochs else f"hybrid(k={self.loss_k:.0f})"
+            if X_val is not None and y_val is not None and metrics is not None and group is not None:
+                valPred = self.predict(X_val)
+                valActual = np.asarray(y_val)[self.seq_len:]
+                summary = metrics.summarize(valPred, valActual, group)
+                record.update({"val_nmae": summary["nmae"], "val_ficr": summary["ficr"], "val_score": summary["score"]})
+                if summary["score"] > bestScore:
+                    bestScore = summary["score"]
+                    bestState = copy.deepcopy(self.model.state_dict())
+                    noImprove = 0
+                else:
+                    noImprove += 1
+                print(f"  epoch {epoch + 1:02d}/{self.epochs} [{phase}] loss={epochLoss:.5f} val_score={summary['score']:.5f}")
+                if noImprove >= self.patience:
+                    print(f"  early stopping: {self.patience} epochs 동안 검증 총점 개선 없음")
+                    break
+            else:
+                print(f"  epoch {epoch + 1:02d}/{self.epochs} [{phase}] loss={epochLoss:.5f}")
+            self.history.append(record)
+
+        if bestState is not None:
+            self.model.load_state_dict(bestState)
 
         return self
         # 학습이 끝난 self(=self.model이 채워진 상태)를 그대로 반환
 
     @torch.no_grad()
     # 추론 시에는 gradient 계산이 불필요하므로 데코레이터로 꺼서 메모리/속도를 아낀다
-    def predict(self, X_test: np.ndarray, y_test: np.ndarray) -> np.ndarray:
+    def predict(self, X_test: np.ndarray, y_test: Optional[np.ndarray] = None) -> np.ndarray:
         """학습된 모델로 예측값을 반환하는 메서드
 
         Args:
@@ -215,6 +264,8 @@ class LSTMPipeline:
             raise RuntimeError("fit()을 먼저 호출해 모델을 학습시켜야 합니다.")
             # self.model이 아직 채워지지 않았다는 것은 fit()이 호출된 적 없다는 뜻
 
+        if y_test is None:
+            y_test = np.zeros(len(X_test), dtype=np.float32)
         testDs = SequenceDataset(X_test, y_test, seq_len=self.seq_len)
         # 테스트 데이터도 학습 때와 동일한 seq_len으로 슬라이딩 윈도우 구성
         testLoader = DataLoader(testDs, batch_size=64, shuffle=False)
@@ -226,7 +277,7 @@ class LSTMPipeline:
         preds = []
         for xb, _ in testLoader:
             # 정답(yb)은 예측 시 필요 없으므로 버림(_)
-            preds.append(self.model(xb).numpy())
+            preds.append((self.model(xb) * self.capacity_kw).numpy())
             # 배치별 예측 결과를 numpy 배열로 변환해 리스트에 쌓음
 
         return np.concatenate(preds)

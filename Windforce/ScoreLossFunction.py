@@ -12,7 +12,7 @@ class ScoreLossFunction(nn.Module):
           단가가 1원 차이로 변화하는데 이 구간의 미분값이 0이 되지 않도록 시그모이드 함수의 steepness를 조절하는 k값을 설정 
     """
 
-    def __init__(self, capacity_kw: float, k: float = 300.0,
+    def __init__(self, capacity_kw: float, k: float = 40.0,
                  NMAE_weight: float = 0.5, FICR_weight: float = 0.5):
         super().__init__()
         self.capacity_kw = capacity_kw
@@ -55,4 +55,3 @@ class ScoreLossFunction(nn.Module):
         # 손실함수이므로 FICR는 1 - softFICR로 변환하여 최소화하도록 함(작을수록 좋은 방향으로 일관성 확보)
         
         return loss
-
