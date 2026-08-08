@@ -1,6 +1,3 @@
-# Step 2·4·8·10. GFS 예보의 형식 통일, 격자 파생변수, KPX 그룹 공간 가중
-# 03_Preprocessing.ipynb에서 범위 밖으로 미뤘던 GFS를 FeatureEngineer 계약에 맞춰 새로 구현한 모듈
-
 """GFS 예보의 컬럼 통일과 다층 바람 파생변수 생성을 담당하는 모듈.
 
 GFS를 쓰는 이유는 단 하나, **고도**다. LDAPS는 10m와 50m(최대·최소)만 주는데
@@ -11,7 +8,7 @@ GFS는 80m·100m 순간값을 준다. 허브 높이가 117m라 100m 바람이 �
 컬럼 이름에는 전부 ``gfs_`` 접두사를 붙인다. LDAPS도 10m U·V와 2m 기온을 갖고 있어
 한 표에 합칠 때 이름이 부딪히기 때문이다.
 
-    transform()            격자별 파생변수 + 품질 플래그
+    preprocess()           격자별 파생변수 + 품질 플래그 (템플릿은 부모가 정의)
       -> transformToGroupIDW()   9격자 -> KPX 그룹 (역거리 가중)
       -> transformForecastFeature() 시계열 변화량·램프
 """
@@ -23,26 +20,38 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
-from ..FeatureEngineer import FeatureEngineer, IDW_K, IDW_POWER
+from .FeatureEngineer import BasePreprocessor
+from ..utils.spatial_utils import (
+    IDW_K,
+    IDW_POWER,
+    PreprocessingError,
+    compute_group_weight,
+    transform_to_group_feature,
+)
+from ..utils.time_utils import (
+    transform_cyclic_time,
+    transform_forecast_diff,
+    transform_group_time_feature,
+)
+from ..utils.wind_utils import (
+    calculate_air_density,
+    calculate_wind_power_density,
+    compute_wind_direction,
+    compute_wind_shear,
+    compute_wind_speed,
+    transform_wind_direction,
+)
 
 
-GFS_GRID_COUNT = 9
-# GFS 격자 수. LDAPS(16격자, 1.5km)보다 성기지만 더 높은 고도의 바람을 준다
 HUB_HEIGHT_M = 117.0
 # V126 허브 높이(m). 100m 바람이 가장 가깝고 여기까지 외삽해서 쓴다
-WIND_LEVELS = {
-    "gfs_ws_10": 10.0,
-    "gfs_ws_80": 80.0,
-    "gfs_ws_100": 100.0,
-}
-# 풍속 컬럼 -> 고도(m). 전단지수 계산과 허브 높이 외삽에 쓴다
 RH_PHYS_MAX = 100.0
 # 상대습도 물리한계(%). 수치예보 산출물이라 100%를 살짝 넘는 값이 나올 수 있다
 GUST_RATIO_MAX = 5.0
 # 돌풍이 평균풍속의 5배를 넘으면 비물리적이다. 값은 두고 플래그만 남긴다
 
 
-class GFSFeatureEngineer(FeatureEngineer):
+class GFSFeatureEngineer(BasePreprocessor):
     """GFS 예보의 다층 바람 파생변수와 KPX 그룹 공간 가중을 담당하는 클래스
 
     Attributes:
@@ -113,10 +122,21 @@ class GFSFeatureEngineer(FeatureEngineer):
         # 500hPa(약 5.5km) 상층. 종관 규모 기압계의 위치를 나타낸다
     }
 
-    TIME_COLS = ["forecast_kst_dtm", "data_available_kst_dtm"]
+    REQUIRED_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "forecast_kst_dtm",
+        "data_available_kst_dtm",
+        "grid_id",
+        "latitude",
+        "longitude",
+        "heightAboveGround_10_10u",
+        "heightAboveGround_10_10v",
+    )
+    # 10m U·V와 시간·격자 구조만 필수로 한다. 고도별 자료가 빠진 축약 입력도 처리한다
+
+    TIME_COLS: ClassVar[list[str]] = ["forecast_kst_dtm", "data_available_kst_dtm"]
     # 예보 대상 시각과 예보 사용 가능 시각. 둘의 차이가 선행시간(lead_hour)이다
 
-    UV_LEVELS = {
+    UV_LEVELS: ClassVar[dict[str, tuple[str, str]]] = {
         "10": ("gfs_u10", "gfs_v10"),
         "80": ("gfs_u80", "gfs_v80"),
         "100": ("gfs_u100", "gfs_v100"),
@@ -129,7 +149,7 @@ class GFSFeatureEngineer(FeatureEngineer):
     # Value: (동서방향 U 성분 컬럼명, 남북방향 V 성분 컬럼명)
     # 레벨이 7개든 20개든 이 딕셔너리 한 줄만 추가하면 된다
 
-    IDW_FEATURES = [
+    IDW_FEATURES: ClassVar[list[str]] = [
         "gfs_u10", "gfs_v10", "gfs_ws_10",
         "gfs_u80", "gfs_v80", "gfs_ws_80",
         "gfs_u100", "gfs_v100", "gfs_ws_100",
@@ -153,16 +173,18 @@ class GFSFeatureEngineer(FeatureEngineer):
     ]
     # 격자별로 이미 계산을 마친 값만 넣는다. 풍향(각도)은 넣지 않고 U·V에서 복원한다
 
-    def __init__(self, group: str | None = None, k: int = IDW_K, power: float = IDW_POWER):
-        super().__init__(group)
+    def __init__(
+        self,
+        group: str | None = None,
+        k: int = IDW_K,
+        power: float = IDW_POWER,
+    ):
+        super().__init__(group = group)
         self.k = k
         self.power = power
-        self.weight_group: np.ndarray | None = None
-        self.grid_index: pd.Index | None = None
-        # 격자 좌표는 기간 내내 고정이므로 가중치는 한 번만 구하고 계속 재사용한다
 
     # ------------------------------------------------------------------
-    # 추상 메서드 구현 — transform 템플릿이 순서대로 호출한다
+    # 추상 메서드 구현 — preprocess 템플릿이 순서대로 호출한다
     # ------------------------------------------------------------------
 
     def transformColumnName(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -194,7 +216,7 @@ class GFSFeatureEngineer(FeatureEngineer):
         df = df.copy()
         for col in self.TIME_COLS:
             if col in df.columns:
-                df[col] = pd.to_datetime(df[col])
+                df[col] = pd.to_datetime(df[col], errors = "raise")
 
         if set(self.TIME_COLS).issubset(df.columns):
             df["forecast_issue_date"] = df["data_available_kst_dtm"].dt.normalize()
@@ -210,11 +232,12 @@ class GFSFeatureEngineer(FeatureEngineer):
         """GFS 원시값의 물리 일관성을 검사해 플래그를 붙이는 메서드
 
         Args:
-            - df: gfs_t2m·gfs_dpt2m(K), gfs_rh2m(%) 컬럼을 가진 표
+            - df: gfs_t2m·gfs_dpt2m(K), gfs_rh2m(%), gfs_sp(Pa) 컬럼을 가진 표
 
         Logic:
-            - is_gfs_temp_below_dew : 기온 < 이슬점. 물리적으로 불가능한 과포화 상태
-            - is_gfs_rh_over_100    : 상대습도 > 100%
+            - is_gfs_temp_below_dew   : 기온 < 이슬점. 물리적으로 불가능한 과포화 상태
+            - is_gfs_rh_over_100      : 상대습도 > 100%
+            - is_gfs_pressure_invalid : 기압 <= 0. 단위 사고를 잡는 안전망
             - 수치예보 모델 산출물이라 값은 지우지 않고 플래그만 남긴다.
               통계적 이상치 제거를 쓰지 않는 이유도 LDAPS와 같다 (폭풍이 가장 중요한 사례다)
         """
@@ -223,8 +246,10 @@ class GFSFeatureEngineer(FeatureEngineer):
             df["is_gfs_temp_below_dew"] = df["gfs_t2m"] < df["gfs_dpt2m"]
         if "gfs_rh2m" in df.columns:
             df["is_gfs_rh_over_100"] = df["gfs_rh2m"] > RH_PHYS_MAX
+        if "gfs_sp" in df.columns:
+            df["is_gfs_pressure_invalid"] = df["gfs_sp"] <= 0
         return df
-        # 물리 일관성 플래그 2종이 추가된 DataFrame 반환. 원본 값은 그대로다
+        # 물리 일관성 플래그 3종이 추가된 DataFrame 반환. 원본 값은 그대로다
 
     def calculatePhysicalFeature(self, df: pd.DataFrame) -> pd.DataFrame:
         """격자별 다층 바람·전단·밀도 파생변수를 계산하는 메서드
@@ -243,25 +268,25 @@ class GFSFeatureEngineer(FeatureEngineer):
         df = df.copy()
 
         for level, (u_col, v_col) in self.UV_LEVELS.items():
-            if u_col in df.columns and v_col in df.columns:
+            if {u_col, v_col}.issubset(df.columns):
                 # 컬럼 존재 여부를 방어적으로 확인
-                df[f"gfs_ws_{level}"] = self.computeWindSpeed(df[u_col], df[v_col])
-                df[f"gfs_wd_{level}"] = self.computeWindDirection(df[u_col], df[v_col])
+                df[f"gfs_ws_{level}"] = compute_wind_speed(df[u_col], df[v_col])
+                df[f"gfs_wd_{level}"] = compute_wind_direction(df[u_col], df[v_col])
 
         if {"gfs_ws_10", "gfs_ws_100"}.issubset(df.columns):
-            df["gfs_shear_alpha"] = self.computeWindShear(
+            df["gfs_shear_alpha"] = compute_wind_shear(
                 df["gfs_ws_10"], df["gfs_ws_100"], height_low = 10.0, height_high = 100.0
             )
             df["gfs_ws_hub"] = df["gfs_ws_100"] * (HUB_HEIGHT_M / 100.0) ** df["gfs_shear_alpha"]
             # 100m -> 허브 높이 117m 외삽. 대회 평가 기간에 SCADA가 없어 이 값이 허브풍속 대리변수다
 
         if {"gfs_t2m", "gfs_q2m", "gfs_sp"}.issubset(df.columns):
-            df = self.calculateAirDensity(
+            df = calculate_air_density(
                 df, t_col = "gfs_t2m", q_col = "gfs_q2m", p_col = "gfs_sp", prefix = "gfs_"
             )
             ws_for_power = "gfs_ws_hub" if "gfs_ws_hub" in df.columns else "gfs_ws_100"
             if ws_for_power in df.columns:
-                df["gfs_wind_power_density"] = self.calculateWindPowerDensity(
+                df["gfs_wind_power_density"] = calculate_wind_power_density(
                     df["gfs_air_density"], df[ws_for_power]
                 )
                 # LDAPS는 10m 풍속으로 계산하지만 GFS는 허브 높이 풍속을 쓸 수 있다
@@ -285,6 +310,10 @@ class GFSFeatureEngineer(FeatureEngineer):
         return df
         # 고도별 풍속·풍향과 전단·밀도·안정도 파생변수가 추가된 DataFrame 반환
 
+    # ------------------------------------------------------------------
+    # 훅 메서드 오버라이드 — GFS는 주기 인코딩만 쓴다
+    # ------------------------------------------------------------------
+
     def transformCyclicFeature(self, df: pd.DataFrame) -> pd.DataFrame:
         """고도별 풍향과 예보 대상 시각을 주기성 피처로 변환하는 메서드
 
@@ -292,9 +321,9 @@ class GFSFeatureEngineer(FeatureEngineer):
             - df: 고도별 풍향(gfs_wd*)과 forecast_kst_dtm을 가진 표
         """
         wd_cols = [c for c in df.columns if c.startswith("gfs_wd_")]
-        df = self.transformWindDirection(df, wind_direction_cols = wd_cols)
+        df = transform_wind_direction(df, wind_direction_cols = wd_cols)
         if "forecast_kst_dtm" in df.columns:
-            df = self.transformCyclicTime(df, time_col = "forecast_kst_dtm")
+            df = transform_cyclic_time(df, time_col = "forecast_kst_dtm")
         return df
         # 고도별 풍향 sin/cos와 시간 순환 피처가 추가된 DataFrame 반환
 
@@ -308,7 +337,7 @@ class GFSFeatureEngineer(FeatureEngineer):
         """9격자를 터빈 위치 기준 역거리 가중으로 그룹별 피처로 바꾸는 메서드
 
         Args:
-            - df: transform을 마친 격자 단위 표
+            - df: preprocess를 마친 격자 단위 표
             - turbine_meta: 터빈 1기 = 1행. `group`, `lat`, `lon`, `cap_kw` 컬럼 필수
 
         Logic:
@@ -316,27 +345,38 @@ class GFSFeatureEngineer(FeatureEngineer):
               그래도 그룹마다 다른 값이 나와야 공간 매핑이 의미가 있다
             - 풍향은 가중평균한 U·V에서 다시 복원한다. 각도를 직접 평균하면 안 된다
         """
-        grid_coords = df.groupby("grid_id")[["latitude", "longitude"]].first().sort_index()
+        required = {"grid_id", "latitude", "longitude", "forecast_kst_dtm"}
+        missing = sorted(required.difference(df.columns))
+        if missing:
+            raise KeyError(f"GFS 공간 집계에 필요한 컬럼이 없습니다: {missing}")
+
+        grid_coords = (
+            df.groupby("grid_id", observed = True)[["latitude", "longitude"]]
+            .first()
+            .sort_index()
+        )
         # 격자별 좌표. 기간 내내 고정이라 첫 행만 꺼내 쓴다
 
-        self.weight_group = self.computeGroupWeight(
+        grid_index = grid_coords.index
+        weight_group = compute_group_weight(
             turbine_meta, grid_coords, k = min(self.k, len(grid_coords)), power = self.power
         )
-        self.grid_index = grid_coords.index
-        # 격자가 k개보다 적을 수 있어 이웃 수를 격자 수로 제한한다
 
         features = [f for f in self.IDW_FEATURES if f in df.columns]
-        group_df = self.transformToGroupFeature(
+        if not features:
+            raise PreprocessingError("GFS 공간 집계에 사용할 파생 피처가 없습니다")
+        group_df = transform_to_group_feature(
             df, features = features,
-            weight_group = self.weight_group, grid_index = self.grid_index,
+            weight_group = weight_group, grid_index = grid_index,
             time_col = "forecast_kst_dtm",
+            target_groups = [self.group] if self.group else None,
         )
 
         for level, (u_col, v_col) in self.UV_LEVELS.items():
-            if u_col in group_df.columns and v_col in group_df.columns:
+            if {u_col, v_col}.issubset(group_df.columns):
                 name = f"gfs_wd_{level}"
-                group_df[name] = self.computeWindDirection(group_df[u_col], group_df[v_col])
-                group_df = self.transformWindDirection(group_df, wind_direction_cols = [name])
+                group_df[name] = compute_wind_direction(group_df[u_col], group_df[v_col])
+                group_df = transform_wind_direction(group_df, wind_direction_cols = [name])
                 # 각도는 가중평균하면 안 되므로 U·V를 평균한 뒤 방향을 복원한다
 
         if "gfs_ws_hub" in group_df.columns:
@@ -344,8 +384,9 @@ class GFSFeatureEngineer(FeatureEngineer):
             group_df["gfs_ws_hub_3"] = group_df["gfs_ws_hub"] ** 3
             # 풍력에너지가 풍속 세제곱에 비례하므로 비선형 항을 미리 만들어준다
 
-        group_df = self.transformGroupTimeFeature(
-            group_df, df, time_meta_cols = ["gfs_lead_hour", "target_hour", "forecast_issue_date"]
+        group_df = transform_group_time_feature(
+            group_df, df,
+            time_meta_cols = ["gfs_lead_hour", "target_hour", "forecast_issue_date"],
         )
         # 공간 가중평균은 IDW_FEATURES만 통과시키므로 시간 메타를 여기서 되살린다
 
@@ -361,17 +402,28 @@ class GFSFeatureEngineer(FeatureEngineer):
         Logic:
             - 허브 높이 풍속(gfs_ws_hub)을 기준으로 변화량을 잰다.
               발전량과 직접 연결되는 고도라 10m 변화량보다 신호가 강하다
+            - 100m 자료가 없는 축약 입력에서는 10m 컬럼으로 대체해 계산한다
         """
         df = df.sort_values(["group", "forecast_kst_dtm"], ignore_index = True)
         ws_col = "gfs_ws_hub" if "gfs_ws_hub" in df.columns else "gfs_ws_100"
-        return self.transformForecastDiff(
-            df, ws_col = ws_col, u_col = "gfs_u100", v_col = "gfs_v100", wd_col = "gfs_wd_100",
+        if ws_col not in df.columns:
+            ws_col = "gfs_ws_10"
+        u_col = "gfs_u100" if "gfs_u100" in df.columns else "gfs_u10"
+        v_col = "gfs_v100" if "gfs_v100" in df.columns else "gfs_v10"
+        wd_col = "gfs_wd_100" if "gfs_wd_100" in df.columns else "gfs_wd_10"
+        return transform_forecast_diff(
+            df, ws_col = ws_col, u_col = u_col, v_col = v_col, wd_col = wd_col,
             key = "group", prefix = "gfs",
         )
         # gfs_ws_diff_1h 등 변화량 피처 8종이 추가된 DataFrame 반환
 
+    def transformGFS(self, df: pd.DataFrame) -> pd.DataFrame:
+        """기존 호출부(BASELINE 노트북)를 위한 전처리 호환 메서드"""
+        return self.preprocess(df)
+        # preprocess 템플릿과 완전히 같은 결과를 반환한다
+
 
 __all__ = [
     "GFSFeatureEngineer",
-    "GFS_GRID_COUNT", "HUB_HEIGHT_M", "WIND_LEVELS", "RH_PHYS_MAX", "GUST_RATIO_MAX",
+    "HUB_HEIGHT_M", "RH_PHYS_MAX", "GUST_RATIO_MAX",
 ]

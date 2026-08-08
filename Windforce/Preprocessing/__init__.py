@@ -36,7 +36,7 @@ from ..FeatureEngineer import (
     SEASON_MAP,
     SEQ_LEN,
 )
-from .FeatureEngineerFactory import FeatureEngineerFactory
+from .PreprocessorFactory import PreprocessorFactory as FeatureEngineerFactory
 from .GFSFeatureEngineer import (
     GFS_GRID_COUNT,
     GFSFeatureEngineer,

@@ -1,7 +1,3 @@
-# Step 3·4·5·7·8·9. SCADA 10분 실측의 형식 변환·품질 정제·보간·파생변수·시간 집계
-# 03_Preprocessing.ipynb의 ScadaPreprocessor·ScadaQualityChecker·ScadaCleaner·
-# ScadaFeatureEngineer·ScadaAggregator를 FeatureEngineer 계약에 맞춰 하나로 승격한 모듈
-
 """SCADA 10분 실측의 품질 정제와 그룹별 시간 집계를 담당하는 모듈.
 
 터빈 17기가 컬럼으로 옆으로 늘어선 wide 표(`vestas_wtg01_power_kw10m`, ...)는
@@ -24,12 +20,15 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
-from ..FeatureEngineer import (
-    FeatureEngineer,
-    KPX_GROUPS,
-    MAX_INTERP_STEPS,
-    MIN_SAMPLES_PER_HOUR,
+from .FeatureEngineer import BasePreprocessor
+from ..utils.spatial_utils import KPX_GROUPS
+from ..utils.time_utils import MAX_INTERP_STEPS, interpolate_short_gap
+from ..utils.wind_utils import (
     RHO_STD,
+    compute_uv_component,
+    compute_wind_direction,
+    compute_wind_speed,
+    transform_wind_direction,
 )
 
 
@@ -40,6 +39,7 @@ NEG_POWER_RATIO = 0.05
 FROZEN_STEPS = 18
 # 같은 값이 10분 간격으로 18번 넘게 반복 = 3시간 고정. 센서 고착을 의심한다 (18 x 10분 = 180분)
 CUT_IN_MS = 3.0
+MIN_SAMPLES_PER_HOUR = 6
 # 컷인 풍속(m/s). V126·U136 둘 다 3 m/s (INFO/V126_vs_U136_스펙비교.html)
 HIGH_WS_MS = 5.0
 # 이 정도 바람이면 발전하는 게 정상이다. 그런데 0이면 고장·정비·출력제한 후보다
@@ -70,7 +70,7 @@ META_COLS = ["turbine", "group", "model", "cap_kwh10m", "cut_out_ms", "swept_are
 # 검사·파생에 필요한 터빈 메타 컬럼. 터빈마다 정격·컷아웃·수풍면적이 다르다
 
 
-class SCADAFeatureEngineer(FeatureEngineer):
+class SCADAFeatureEngineer(BasePreprocessor):
     """SCADA 10분 실측의 품질 정제와 그룹별 시간 집계를 담당하는 클래스
 
     Attributes:
@@ -78,7 +78,6 @@ class SCADAFeatureEngineer(FeatureEngineer):
         - max_interpolation_steps: 이 칸수 이하의 연속 결측만 보간한다 (기본 2칸 = 20분)
         - FLAG_COLS: 플래그 이름 목록. 순서가 QC 비트 코드의 자릿수를 결정한다
         - DROP_FLAGS: 값을 못 믿겠다고 판단해 NaN 처리할 플래그
-        - KEEP_FLAGS: 실제 운영 상태라서 값을 유지할 플래그
     """
 
     source: ClassVar[str] = "scada"
@@ -94,6 +93,10 @@ class SCADAFeatureEngineer(FeatureEngineer):
         # 나셀 풍향 (도). VESTAS는 0~360, UNISON은 -180~180 표기다
     }
 
+    REQUIRED_COLUMNS: ClassVar[tuple[str, ...]] = ()
+    # 원본이 wide/long 어느 형식이든 받으므로 템플릿의 사전 검사는 비워 둔다.
+    # 세로 표 계약 검사는 rename 직후 transformColumnName이 수행한다 (아래 REQUIRED_COLS)
+
     FLAG_COLS: ClassVar[list[str]] = [
         "is_power_outlier", "is_power_neg_large", "is_power_neg_small", "is_frozen_sensor",
         "is_high_wind_zero_power", "is_low_wind_zero_power", "is_cut_out",
@@ -106,12 +109,7 @@ class SCADAFeatureEngineer(FeatureEngineer):
     ]
     # 이 세 가지만 센서를 못 믿겠다는 근거가 되어 NaN 처리 대상이다
 
-    KEEP_FLAGS: ClassVar[list[str]] = [
-        "is_power_neg_small", "is_high_wind_zero_power", "is_low_wind_zero_power", "is_cut_out",
-    ]
-    # 고풍속 무발전·컷아웃·정상 정지는 실제 운영 상태다. 결측으로 바꾸면 정보가 사라진다
-
-    REQUIRED_COLS = ["kst_dtm", "turbine", "power_raw", "ws_raw", "wd_raw"]
+    REQUIRED_COLS: ClassVar[list[str]] = ["kst_dtm", "turbine", "power_raw", "ws_raw", "wd_raw"]
     # 세로 표가 반드시 가져야 하는 컬럼. 하나라도 없으면 뒤 단계가 전부 무의미해진다
 
     def __init__(
@@ -120,7 +118,7 @@ class SCADAFeatureEngineer(FeatureEngineer):
         turbine_meta: pd.DataFrame | None = None,
         max_interpolation_steps: int = MAX_INTERP_STEPS,
     ):
-        super().__init__(group)
+        super().__init__(group = group)
 
         if turbine_meta is None:
             raise ValueError(
@@ -143,7 +141,7 @@ class SCADAFeatureEngineer(FeatureEngineer):
         # 집계 단계에서 터빈 -> 그룹·정격을 반복 조회하므로 딕셔너리로 미리 펴둔다
 
     # ------------------------------------------------------------------
-    # 입력 형식 변환 (구체) — transform 전에 한 번 부른다
+    # 입력 형식 변환 (구체) — preprocess 전에 한 번 부른다
     # ------------------------------------------------------------------
 
     def transformTurbineSpec(self, turbine_meta: pd.DataFrame) -> pd.DataFrame:
@@ -210,7 +208,7 @@ class SCADAFeatureEngineer(FeatureEngineer):
         # 한 행 = 한 터빈 x 한 시각인 세로 표 반환
 
     # ------------------------------------------------------------------
-    # 추상 메서드 구현 — transform 템플릿이 순서대로 호출한다
+    # 추상 메서드 구현 — preprocess 템플릿이 순서대로 호출한다
     # ------------------------------------------------------------------
 
     def transformColumnName(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -366,6 +364,10 @@ class SCADAFeatureEngineer(FeatureEngineer):
         return pd.Series(qc_code, index = df.index, name = "power_qc_flag")
         # 행마다 어떤 플래그가 걸렸는지를 담은 int32 시리즈 반환
 
+    # ------------------------------------------------------------------
+    # 훅 메서드 오버라이드 — SCADA는 결측 정제·보간이 핵심 단계다
+    # ------------------------------------------------------------------
+
     def interpolateMissing(self, df: pd.DataFrame) -> pd.DataFrame:
         """못 믿을 값만 NaN으로 바꾸고 짧은 결측만 보간하는 메서드
 
@@ -386,10 +388,10 @@ class SCADAFeatureEngineer(FeatureEngineer):
         df["wd_clean"] = df["wd_raw"] % FULL_TURN_DEG
         # UNISON의 -180~180 표기를 0~360으로 맞춘다 (VESTAS는 원래 0~360이라 값이 안 변한다)
 
-        df["power_filled"], df["is_power_interpolated"] = self.interpolateShortGap(
+        df["power_filled"], df["is_power_interpolated"] = interpolate_short_gap(
             df, col = "power_clean", key = "turbine", max_steps = self.max_interpolation_steps
         )
-        df["ws_filled"], df["is_ws_interpolated"] = self.interpolateShortGap(
+        df["ws_filled"], df["is_ws_interpolated"] = interpolate_short_gap(
             df, col = "ws_clean", key = "turbine", max_steps = self.max_interpolation_steps
         )
 
@@ -417,15 +419,15 @@ class SCADAFeatureEngineer(FeatureEngineer):
             - 10분 에너지(kWh)에 6을 곱해 순간 출력(kW)으로 환산한다
         """
         df = df.copy()
-        u, v = self.computeUVComponent(df["ws_filled"], df["wd_clean"])
+        u, v = compute_uv_component(df["ws_filled"], df["wd_clean"])
         df["u_scada"] = u.astype("float32")
         df["v_scada"] = v.astype("float32")
         # 240만 행 표라 float32로 낮춰 메모리를 절반으로 줄인다
 
-        df["u_scada"], df["is_u_interpolated"] = self.interpolateShortGap(
+        df["u_scada"], df["is_u_interpolated"] = interpolate_short_gap(
             df, col = "u_scada", key = "turbine", max_steps = self.max_interpolation_steps
         )
-        df["v_scada"], _ = self.interpolateShortGap(
+        df["v_scada"], _ = interpolate_short_gap(
             df, col = "v_scada", key = "turbine", max_steps = self.max_interpolation_steps
         )
         df["dir_valid"] = df["ws_filled"] >= LOW_WS_MASK
@@ -441,7 +443,7 @@ class SCADAFeatureEngineer(FeatureEngineer):
 
     def transformCyclicFeature(self, df: pd.DataFrame) -> pd.DataFrame:
         """정제된 풍향을 sin/cos 주기성 피처로 변환하는 메서드"""
-        return self.transformWindDirection(df, wind_direction_cols = ["wd_clean"])
+        return transform_wind_direction(df, wind_direction_cols = ["wd_clean"])
         # wd_clean_sin·wd_clean_cos가 추가된 DataFrame 반환
 
     # ------------------------------------------------------------------
@@ -452,7 +454,7 @@ class SCADAFeatureEngineer(FeatureEngineer):
         """정제된 10분 자료를 터빈 x 시간 단위로 집계하는 메서드
 
         Args:
-            - df: transform을 마친 세로 표 (power_filled, ws_filled, u_scada, v_scada 포함)
+            - df: preprocess를 마친 세로 표 (power_filled, ws_filled, u_scada, v_scada 포함)
 
         Logic:
             - power_sum_strict  : 10분값 6개가 다 있을 때만 인정 (min_count = 6)
@@ -551,8 +553,8 @@ class SCADAFeatureEngineer(FeatureEngineer):
             # 터빈 간 풍속 편차. 후류 효과의 단서가 된다
             u_group = wide["u_mean"][members].mean(axis = 1)
             v_group = wide["v_mean"][members].mean(axis = 1)
-            ws_vector = self.computeWindSpeed(u_group, v_group)
-            wd_group = self.computeWindDirection(u_group, v_group)
+            ws_vector = compute_wind_speed(u_group, v_group)
+            wd_group = compute_wind_direction(u_group, v_group)
             # 풍향은 U·V를 평균한 뒤 복원한다. 각도를 직접 평균하면 안 된다
 
             resultant = (ws_vector / (ws_scalar + 1e-8)).clip(upper = 1.0)
@@ -592,6 +594,6 @@ __all__ = [
     "SCADAFeatureEngineer",
     "POWER_CAP_RATIO", "NEG_POWER_RATIO", "FROZEN_STEPS",
     "CUT_IN_MS", "HIGH_WS_MS", "WS_PHYS_MAX", "DISAGREE_RATIO",
-    "MIN_SAMPLES_RELAXED", "LOW_WS_MASK",
+    "MIN_SAMPLES_RELAXED", "LOW_WS_MASK", "FULL_TURN_DEG",
     "SWEPT_AREA_M2", "CUT_OUT_MS",
 ]
