@@ -43,8 +43,16 @@ from ..utils.wind_utils import (
 )
 
 
+GFS_GRID_COUNT = 9
+# GFS 격자 수. LDAPS(16격자, 1.5km)보다 성기지만 더 높은 고도의 바람을 준다
 HUB_HEIGHT_M = 117.0
 # V126 허브 높이(m). 100m 바람이 가장 가깝고 여기까지 외삽해서 쓴다
+WIND_LEVELS = {
+    "gfs_ws_10": 10.0,
+    "gfs_ws_80": 80.0,
+    "gfs_ws_100": 100.0,
+}
+# 풍속 컬럼 -> 고도(m). 전단지수 계산과 허브 높이 외삽에 쓴다
 RH_PHYS_MAX = 100.0
 # 상대습도 물리한계(%). 수치예보 산출물이라 100%를 살짝 넘는 값이 나올 수 있다
 GUST_RATIO_MAX = 5.0
@@ -425,5 +433,5 @@ class GFSFeatureEngineer(BasePreprocessor):
 
 __all__ = [
     "GFSFeatureEngineer",
-    "HUB_HEIGHT_M", "RH_PHYS_MAX", "GUST_RATIO_MAX",
+    "GFS_GRID_COUNT", "HUB_HEIGHT_M", "WIND_LEVELS", "RH_PHYS_MAX", "GUST_RATIO_MAX",
 ]

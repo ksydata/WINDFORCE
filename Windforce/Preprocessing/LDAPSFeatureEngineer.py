@@ -41,12 +41,16 @@ from ..utils.wind_utils import (
 )
 
 
+LDAPS_GRID_COUNT = 16
+# LDAPS 격자 수. 1.5km 해상도라 GFS(9격자)보다 촘촘하다
 WS_TIME_JUMP_MS = 15.0
 # 같은 격자에서 1시간에 15 m/s 넘게 변하면 시간 급변으로 표시한다
 WS_SPACE_JUMP_MS = 10.0
 # 같은 시각인데 격자 간 풍속이 10 m/s 넘게 벌어지면 공간 급변으로 표시한다
 RH_PHYS_MAX = 100.0
 # 상대습도 물리한계(%). 모델 산출물이라 100%를 살짝 넘는 값이 실제로 존재한다
+
+
 class LDAPSFeatureEngineer(BasePreprocessor):
     """LDAPS 예보의 격자 파생변수와 KPX 그룹 공간 가중을 담당하는 클래스
 
@@ -444,5 +448,5 @@ class LDAPSFeatureEngineer(BasePreprocessor):
 
 __all__ = [
     "LDAPSFeatureEngineer",
-    "WS_TIME_JUMP_MS", "WS_SPACE_JUMP_MS", "RH_PHYS_MAX",
+    "LDAPS_GRID_COUNT", "WS_TIME_JUMP_MS", "WS_SPACE_JUMP_MS", "RH_PHYS_MAX",
 ]
