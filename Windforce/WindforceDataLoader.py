@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 @dataclass # __init__ 자동 생성, __post_init__ 자동 호출하는 데코레이터
 class WindforceDataLoader:
     """WINDFORCE 데이터 로드를 담당하는 클래스"""
-    root: str = "/Users/ksydata/WINDFORCE"
+    root: str = "/Users/yhs80/WINDFORCE"
     # 프로젝트 루트 경로 (기본값)
     root_train: str = field(init = False)
     # 학습 데이터 루트 경로, __post_init__에서 채워짐 (생성자 인자로 안 받음)
