@@ -22,7 +22,14 @@ WINDFORCE/
 ├── BASELINE/                    # 실험 노트북
 │   ├── baseline_1.ipynb         # 탐색적 분석 (EDA) — 절차적 스타일
 │   ├── baseline_2.ipynb         # OOP 버전 (Windforce 패키지 활용)
-│   └── baseline_3.ipynb         # 전체 파이프라인 완성본 ← 현행 주력 노트북
+│   ├── baseline_3.ipynb         # 전체 파이프라인 완성본
+│   ├── baseline_5.ipynb         # 손실함수·피처정렬 개선 적용
+│   └── baseline5_howto.ipynb    # 피처중요도·SHAP 분석 + LightGBM ← 현행 주력 노트북
+│
+├── prep/                        # 전처리 완료본 (baseline5_howto Step 1이 생성)
+│   ├── dataset_train_group{1,2,3}.csv.gz   # 피처 127개 + 타깃
+│   ├── dataset_test_group{1,2,3}.csv.gz    # 평가 기간 피처 127개
+│   └── selected_features.csv               # 그룹별 선별 피처 목록
 │
 ├── TRAIN/                       # 학습 데이터 (2022-01-01 ~ 2025-01-01)
 │   ├── ldaps_train.csv          # LDAPS 기상예보 (16격자 × 26,304시각)
@@ -41,6 +48,9 @@ WINDFORCE/
 │   └── sample_submission.csv    # 제출 양식 (8,760행)
 │
 ├── MD/                          # 프로젝트 문서
+│   ├── coding_convention.md     # 코딩 컨벤션 (주석·네이밍·타입·모델링 규칙)
+│   ├── baseline5_howto_next.md  # baseline5_howto 후속 개선 작업 지시서 (카드 A~G)
+│   ├── improvement.md           # baseline_4 정리 및 정확도 개선 방안
 │   ├── data_description.md      # 데이터 명세 (컬럼 설명, 기간, 단위)
 │   ├── notes.md                 # 실험 노트
 │   ├── Notices.md               # 대회 공지
@@ -259,6 +269,7 @@ $$
 | `Windforce/Modeling/GroupExperimentRunner.py` | `pd`, `MinMaxScaler`, `RATED_CAPACITY_KW`, `LSTMPipeline`, `BaselineModels`, `EvaluationMetrics` import 누락 | 상단에 전부 추가 |
 | `Windforce/Modeling/GroupExperimentRunner.py` | `WindforceDatasetBuilder.featureCols()` — 외부 정의 클래스에 의존 | 독립적인 `_featureCols()` 유틸 함수로 대체 |
 | `Windforce/Modeling/GroupExperimentRunner.py` | `WindforceDatasetBuilder` 타입 어노테이션 — 미정의 클래스 참조 | `datasetBuilder` 로 어노테이션 제거 (duck typing) |
+| `baseline_3/4/5.ipynb` | **`turbine_meta["group"]`에 정수 1/2/3을 넘겨 `compute_group_weight()`의 문자열 비교가 전부 실패 → IDW 가중치 0 행렬 → LDAPS·GFS 그룹 피처가 통째로 0.0** | `baseline5_howto.ipynb`에서 `"kpx_group_" + N` 문자열 키로 수정. 패키지 차원 가드는 `MD/baseline5_howto_next.md` 카드 A 참조 |
 
 ---
 
@@ -268,7 +279,9 @@ $$
 |--------|------|----------|
 | `baseline_1.ipynb` | EDA + 프로토타입 | 절차적 스타일. `FeatureEngineer`, `LDAPSFeatureEngineer`, `GFSFeatureEngineer` 인라인 정의. 파워 커브 시각화, 피어슨 상관계수 검증 |
 | `baseline_2.ipynb` | OOP 전환 | Windforce 패키지 import. `WindforceDatasetBuilder` 골격 정의. `GroupExperimentRunner` 실험 실행 |
-| `baseline_3.ipynb` | 완성 파이프라인 | **이 노트북 사용 권장.** 격자→IDW 그룹 집계, 터빈 메타 파싱, 완전한 `WindforceDatasetBuilder.build()`, 평가기간 예측 + 제출 파일 저장까지 end-to-end 동작 |
+| `baseline_3.ipynb` | 완성 파이프라인 | 격자→IDW 그룹 집계, 터빈 메타 파싱, 완전한 `WindforceDatasetBuilder.build()`, 평가기간 예측 + 제출 파일 저장까지 end-to-end 동작 |
+| `baseline_5.ipynb` | 손실함수·피처정렬 개선 | `ScoreLossFunction` 워밍업·steepness 완화(A), 학습·평가 피처 컬럼명 교집합 정렬(B) |
+| `baseline5_howto.ipynb` | 피처 분석 기반 개선 | **이 노트북 사용 권장.** IDW group 키 버그 수정, `transformForecastFeature` 추가, LightGBM + SHAP 피처 선별. 제출 가능 모델 총점 0.4930 → **0.6592** |
 
 ---
 

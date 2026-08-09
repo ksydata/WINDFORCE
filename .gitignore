@@ -3,6 +3,7 @@ TRAIN/*.csv
 TEST/*.csv
 TRAIN/
 TEST/
+prep/*.csv.gz
 
 # Python
 __pycache__/
