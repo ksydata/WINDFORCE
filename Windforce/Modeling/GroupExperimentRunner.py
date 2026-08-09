@@ -7,6 +7,7 @@
 
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
+from typing import Optional
 
 from .BaselineModels import BaselineModels
 from .LSTMPipeline import LSTMPipeline, SEQ_LEN
@@ -36,7 +37,8 @@ class GroupExperimentRunner:
 
     def __init__(self, datasetBuilder,
                  metrics: EvaluationMetrics, groups: list = GROUPS,
-                 testRatio: float = 0.2, seqLen: int = SEQ_LEN):
+                 testRatio: float = 0.2, seqLen: int = SEQ_LEN,
+                 lstmParams: Optional[dict] = None):
         """
         Args:
             - datasetBuilder: Step4/6 연결부. build(group)을 호출하면
@@ -52,6 +54,7 @@ class GroupExperimentRunner:
         self.groups = groups
         self.testRatio = testRatio
         self.seqLen = seqLen
+        self.lstmParams = lstmParams or {}
 
         self.results: list = []
         # runAll() 실행 후 이 리스트에 {group, model_name, nmae, ficr, score} 딕셔너리들이 누적됨
@@ -116,10 +119,11 @@ class GroupExperimentRunner:
         # (1) Persistence 베이스라인
         # ---------------------------------------------------------------
         persPred = BaselineModels.persistenceForecast(y_test)[1:]
-        # np.roll로 한 칸 밀면 index 0은 wrap-around → 버리고 [1:]부터 사용
+        # 주의: 이 값은 검증 구간의 직전 실제값을 사용한다. 2025년 전체를 한 번에
+        # 제출하는 조건에서는 사용할 수 없는 oracle 성격의 참고 기준선이다.
         groupResults.append({
             "group": group,
-            "model_name": "Persistence",
+            "model_name": "Persistence_oracle_lag1",
             **{k: v for k, v in self.metrics.summarize(persPred, y_test[1:], group).items() if k != "group"},
             # group 키는 위에서 이미 추가했으므로 summarize 반환값에서 제외
         })
@@ -144,12 +148,15 @@ class GroupExperimentRunner:
         # ---------------------------------------------------------------
         print(f"[KPX_{group}] LSTM 학습 시작 (n_features={X_train.shape[1]})")
 
-        lstmPipeline = LSTMPipeline(capacity_kw=RATED_CAPACITY_KW[group], seq_len=self.seqLen)
+        lstmPipeline = LSTMPipeline(
+            capacity_kw=RATED_CAPACITY_KW[group], seq_len=self.seqLen, **self.lstmParams
+        )
         # 이 그룹 전용 설비용량으로 LSTMPipeline 생성
         # (capacity_kw가 그룹마다 다르므로, 그룹 공용 인스턴스를 재사용하면 안 되고
         #  매 그룹마다 새로 만들어야 함)
 
-        lstmPipeline.fit(X_train, y_train)
+        lstmPipeline.fit(X_train, y_train, X_val=X_test, y_val=y_test,
+                         metrics=self.metrics, group=group)
         # 학습 (내부적으로 self.model이 채워짐)
 
         lstmPred = lstmPipeline.predict(X_test, y_test)
