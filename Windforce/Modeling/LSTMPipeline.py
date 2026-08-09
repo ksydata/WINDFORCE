@@ -1,0 +1,318 @@
+# Step 6.2. LSTMPipeline: LSTM 모델의 생성·학습·예측을 하나로 묶어 관리하는 클래스
+
+# h_t: 단기 은닉 상태, c_t: 장기 은닉 상태
+
+# input gate(i_t) = sigmoid(W_ii * x_t + bii + W_hi * h_(t-1) + b_hi) 
+# 입력 게이트로 현재 정보를 얼마나 저장할지 결정
+# forget gate(f_t) = sigmoid(W_if * x_t + b_if + W_hf * h_(t-1) + b_hf)
+# 망각 게이트로 기존 장기 상태를 얼마나 잊을지 결정(기존 정보 얼마나 유지할지 결정)
+
+# candidate state(g_t) = tanh(W_ig * x_t + b_ig + W_hg * h_(t-1) + b_hg)
+# 현재 입력으로부터 새로운 후보 장기 상태(정보)를 생성 (tanh(Hyperbolic Tangent, sigmoid의 4배)로 -1~1 범위로 제한)
+
+# output gate(o_t) = sigmoid(W_io * x_t + b_io + W_ho * h_(t-1) + b_ho)
+# 출력 게이트로 현재 셀의 상태를 얼마나 외부로 출력할지 결정
+
+# cell state(c_t) = f_t * c_(t-1) + i_t * g_t
+# 장기 상태 업데이트/메모리: 기존 장기 상태(c_(t-1))를 forget gate(f_t)로 얼마나 유지할지 결정하고,
+# 새로운 후보 장기 상태(g_t)를 input gate(i_t)로 얼마나 반영할지 결정
+# hidden state(h_t) = o_t * tanh(c_t)
+# 현재 시점의 출력 은닉 상태(h_t)는 장기 상태(c_t)를 tanh로 제한한 후, 출력 게이트(o_t)로 얼마나 외부로 내보낼지 결정
+
+# sequence-to-one 구조: 현재 모델은 24개 전체 시점의 정보가 LSTM 내부 상태에 압축되고,
+# 마지막 hidden state만 FC 레이어로 스칼라 발전량 예측값으로 변환
+
+
+import copy
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+import numpy as np
+import sys, os
+from typing import Optional
+
+# ScoreLossFunction을 Modeling 패키지 밖(부모 패키지)에서 가져온다
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from Windforce.ScoreLossFunction import ScoreLossFunction
+
+# 기존 trainLSTM/predictLSTM 함수는 model 객체를 인자로 주고받는 구조였는데,
+# 이렇게 하면 "이 model이 어느 그룹용으로 학습된 것인지" 호출부에서 매번
+# 변수명으로 관리해야 해서 실수하기 쉽다.
+# 이 클래스는 self.model에 학습된 가중치 상태를 직접 들고 있게 해서,
+# "학습된 모델"이라는 개념 자체를 하나의 객체로 캡슐화한다.
+
+SEQ_LEN = 24   # 최근 24시간 시퀀스로 다음 시점 예측
+
+
+class SequenceDataset(Dataset):
+    """슬라이딩 윈도우 방식으로 (시퀀스, 타깃) 쌍을 만드는 PyTorch Dataset 클래스
+
+    Args:
+        - X: 정규화된 피처 배열, shape = (N, n_features)
+        - y: 타깃 배열(실제 발전량 kWh), shape = (N, )
+        - seq_len: 슬라이딩 윈도우 길이 (과거 몇 시간을 볼지)
+
+    Logic:
+        - i번째 샘플 = X[i : i+seq_len] 을 입력으로, y[i+seq_len] 을 정답으로 사용한다
+        - 앞쪽 seq_len개 시점은 정답을 만들 수 없어 버려진다
+          → predict 후 y_test도 y_test[seq_len:] 로 잘라서 비교해야 한다
+    """
+
+    def __init__(self, X: np.ndarray, y: np.ndarray, seq_len: int = SEQ_LEN):
+        self.X = torch.tensor(X, dtype=torch.float32)
+        # 입력 피처를 float32 텐서로 변환
+        self.y = torch.tensor(y, dtype=torch.float32)
+        # 타깃(발전량)을 float32 텐서로 변환
+        self.seq_len = seq_len
+        # 슬라이딩 윈도우 길이
+
+    def __len__(self) -> int:
+        # seq_len개를 소비하고 나서 예측 가능한 타임스텝 수
+        return len(self.X) - self.seq_len
+
+    def __getitem__(self, idx: int):
+        x_seq = self.X[idx : idx + self.seq_len]
+        # 인덱스 idx부터 seq_len 길이의 입력 시퀀스 슬라이싱
+        y_target = self.y[idx + self.seq_len]
+        # 시퀀스의 바로 다음 시점을 타깃으로 사용
+        return x_seq, y_target
+
+
+class _LSTMModel(nn.Module):
+    """LSTM 기반 시계열 회귀 모델 (LSTMPipeline 내부 전용)
+
+    Args:
+        - n_features: 입력 피처 수 (X_train.shape[1])
+        - hidden_size: LSTM 은닉 상태 차원 수
+        - num_layers: 스택 LSTM 레이어 수
+
+    Logic:
+        - LSTM → 마지막 시퀀스 출력만 추출 → FC → 스칼라
+        - 발전량은 음수가 될 수 없으므로 출력에 ReLU를 적용한다
+    """
+
+    def __init__(self, n_features: int, hidden_size: int = 64, num_layers: int = 2):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=n_features,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            # batch_first=True: 입력 shape = (batch, seq_len, n_features)
+        )
+        self.fc = nn.Linear(hidden_size, 1)
+        # LSTM 마지막 출력을 스칼라 발전량 예측값으로 선형 변환
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out, _ = self.lstm(x)
+        # out shape = (batch, seq_len, hidden_size)
+        last_out = out[:, -1, :]
+        # 마지막 시퀀스 위치의 hidden state만 추출 (N→1 예측)
+        pred = self.fc(last_out).squeeze(-1)
+        # shape = (batch, )
+        return torch.sigmoid(pred)
+        # 발전량을 설비용량 대비 이용률(0~1)로 학습하므로 sigmoid로 범위를 보장한다.
+
+
+class LSTMPipeline:
+    """LSTM 모델의 생성·학습·예측을 하나로 묶어 관리하는 클래스
+
+    사용 순서:
+        pipeline = LSTMPipeline(capacity_kw = 21600.0)
+        pipeline.fit(X_train, y_train)          # 학습 (self.model이 채워짐)
+        pred = pipeline.predict(X_test, y_test)  # 예측 (학습된 self.model 사용)
+    """
+
+    def __init__(self, capacity_kw: float, seq_len: int = SEQ_LEN,
+                 hidden_size: int = 64, num_layers: int = 2,
+                 epochs: int = 80, lr: float = 1e-3,
+                 warmup_epochs: int = 15, loss_k: float = 40.0,
+                 regression_weight: float = 0.75, patience: int = 12):
+        """
+        Args:
+            - capacity_kw: 이 파이프라인이 다루는 그룹의 설비용량(kW).
+              Step5의 ScoreLossFunction 초기화에 그대로 전달됨.
+            - seq_len: LSTM 입력 시퀀스 길이 (과거 몇 시간을 볼지).
+            - hidden_size, num_layers: LSTM 내부 구조 하이퍼파라미터.
+            - epochs, lr: 학습 반복 횟수와 학습률.
+        """
+        self.capacity_kw = capacity_kw
+        # Step5 ScoreLossFunction(capacity_kw=...) 호출 시 그대로 넘길 값
+        self.seq_len = seq_len
+        # SequenceDataset 생성 시 슬라이딩 윈도우 길이로 사용
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        # LSTMPipeline 생성 시 그대로 전달
+        self.epochs = epochs
+        self.lr = lr
+        self.warmup_epochs = warmup_epochs
+        self.loss_k = loss_k
+        self.regression_weight = regression_weight
+        self.patience = patience
+        self.history: list[dict] = []
+        # 정규화 타깃 회귀 신호를 유지해 FICR 근사 손실의 포화를 보완한다.
+
+        self.model: nn.Module | None = None
+        # 학습 전에는 None. fit()이 끝나야 학습된 LSTMPipeline 인스턴스가 여기 저장됨.
+        # predict()에서 이 self.model이 None이면 아직 학습이 안 됐다는 뜻이므로 에러를 낸다.
+
+    def fit(self, X_train: np.ndarray, y_train: np.ndarray,
+            X_val: Optional[np.ndarray] = None, y_val: Optional[np.ndarray] = None,
+            metrics=None, group: Optional[int] = None) -> "LSTMPipeline":
+        """학습 데이터로 LSTM을 학습시키는 메서드
+
+        Args:
+            - X_train: 정규화된 학습용 피처 배열, shape = (N_train, n_features)
+            - y_train: 학습용 실제 발전량(kWh) 배열, shape = (N_train, )
+
+        Returns:
+            - self : 학습이 끝난 자기 자신을 반환한다.
+              이렇게 하면 `pipeline = LSTMPipeline(...).fit(X, y)`처럼
+              생성과 학습을 한 줄로 이어 쓸 수 있다 (메서드 체이닝).
+        """
+        if len(X_train) <= self.seq_len:
+            raise ValueError("학습 데이터 행 수는 seq_len보다 커야 합니다.")
+
+        # kWh 원 단위 타깃을 설비용량 대비 이용률로 바꾼다. 모델은 0~1 범위만
+        # 예측하고, ScoreLossFunction에는 다시 kWh로 역변환해 대회 정의를 유지한다.
+        y_train_norm = np.clip(np.asarray(y_train, dtype=np.float32) / self.capacity_kw, 0.0, 1.0)
+        trainDs = SequenceDataset(X_train, y_train_norm, seq_len=self.seq_len)
+        # 슬라이딩 윈도우 시퀀스 데이터셋 생성 (Step6에서 정의한 클래스 그대로 재사용)
+        trainLoader = DataLoader(trainDs, batch_size=64, shuffle=True)
+        # shuffle=True: 학습 시엔 배치 순서를 섞어 일반화 성능 향상
+        # (단, 각 시퀀스 "내부"의 시간 순서는 SequenceDataset에서 이미 고정되어 있으므로 안전함)
+
+        self.model = _LSTMModel(
+            n_features=X_train.shape[1],
+            # 입력 피처 개수는 X_train의 컬럼 수로 자동 결정 (하드코딩 안 함)
+            hidden_size=self.hidden_size,
+            num_layers=self.num_layers,
+        )
+        # 매 fit() 호출마다 새 모델을 만들어 self.model에 저장
+        # (혹시 다시 fit()을 부르면 이전 학습 내용은 사라지고 새로 학습됨)
+
+        optimizer = torch.optim.Adam(
+            self.model.parameters(), 
+            lr = self.lr)
+        # Adam optimizer로 self.model의 모든 파라미터를 업데이트하도록 설정
+        # 각 파라미터별 gradientd의 1,2차 이동평균을 이용하여 Adam은 파라미터를 업데이트
+        # m_t = β_1 * m_(t-1) + (1 - β_1) * g_t
+        # v_t = β_2 * v_(t-1) + (1 - β_2) * g_t^2
+        # θ_t = θ_(t-1) - α * m_t / (sqrt(v_t) + ε)
+        # β_1, β_2: 이동평균 계수, g_t: gradient, α: 학습률, ε: 작은 상수(0으로 나누는 것을 방지)
+
+        scoreCriterion = ScoreLossFunction(
+            capacity_kw = self.capacity_kw, 
+            k = self.loss_k)
+        regressionCriterion = nn.SmoothL1Loss(beta = 0.05)
+        # FICR 근사만 단독 사용하면 큰 초기 오차에서 sigmoid가 포화된다. 따라서
+        # 이용률 기반 SmoothL1을 계속 섞어 입력 의존적인 회귀 기울기를 보장한다.
+
+        bestState = None
+        bestScore = -float("inf")
+        noImprove = 0
+        self.history = []
+
+        self.model.train()
+        # dropout/batchnorm 등이 있다면 학습모드로 전환 (현재 구조엔 없지만 관례상 명시)
+
+        for epoch in range(self.epochs):
+            epochLoss = 0.0
+            # 이번 epoch의 전체 loss 합을 누적할 변수
+
+            for xb, yb in trainLoader:
+                optimizer.zero_grad()
+                # 이전 스텝에서 계산된 gradient가 남아있지 않도록 초기화
+
+                predNorm = self.model(xb)
+                # forward pass: 배치 입력 xb를 모델에 통과시켜 예측값 계산
+
+                regressionLoss = regressionCriterion(predNorm, yb)
+                if epoch < self.warmup_epochs:
+                    loss = regressionLoss
+                else:
+                    scoreLoss = scoreCriterion(predNorm * self.capacity_kw, yb * self.capacity_kw)
+                    loss = self.regression_weight * regressionLoss + (1 - self.regression_weight) * scoreLoss
+
+                loss.backward()
+                # 역전파: loss에 대한 모든 파라미터의 gradient 계산
+
+                optimizer.step()
+                # 계산된 gradient로 파라미터 업데이트 (경사하강법 한 스텝)
+
+                epochLoss += loss.item() * xb.size(0)
+                # loss.item()은 배치 평균값이므로, 배치 크기(xb.size(0))를 곱해
+                # "배치 합"으로 복원해서 누적 (나중에 전체 데이터 개수로 다시 나눔)
+
+            epochLoss /= len(trainLoader.dataset)
+            # 전체 학습 데이터 개수로 나눠 "이번 epoch 전체 평균 loss"를 구함
+
+            record = {"epoch": epoch + 1, "train_loss": epochLoss}
+            phase = "warmup" if epoch < self.warmup_epochs else f"hybrid(k={self.loss_k:.0f})"
+            if X_val is not None and y_val is not None and metrics is not None and group is not None:
+                valPred = self.predict(X_val)
+                valActual = np.asarray(y_val)[self.seq_len:]
+                summary = metrics.summarize(valPred, valActual, group)
+                record.update({"val_nmae": summary["nmae"], "val_ficr": summary["ficr"], "val_score": summary["score"]})
+                if summary["score"] > bestScore:
+                    bestScore = summary["score"]
+                    bestState = copy.deepcopy(self.model.state_dict())
+                    noImprove = 0
+                else:
+                    noImprove += 1
+                print(f"  epoch {epoch + 1:02d}/{self.epochs} [{phase}] loss={epochLoss:.5f} val_score={summary['score']:.5f}")
+                if noImprove >= self.patience:
+                    print(f"  early stopping: {self.patience} epochs 동안 검증 총점 개선 없음")
+                    break
+            else:
+                print(f"  epoch {epoch + 1:02d}/{self.epochs} [{phase}] loss={epochLoss:.5f}")
+            self.history.append(record)
+
+        if bestState is not None:
+            self.model.load_state_dict(bestState)
+
+        return self
+        # 학습이 끝난 self(=self.model이 채워진 상태)를 그대로 반환
+
+    @torch.no_grad()
+    # 추론 시에는 gradient 계산이 불필요하므로 데코레이터로 꺼서 메모리/속도를 아낀다
+    def predict(self, X_test: np.ndarray, y_test: Optional[np.ndarray] = None) -> np.ndarray:
+        """학습된 모델로 예측값을 반환하는 메서드
+
+        Args:
+            - X_test: 정규화된 테스트용 피처 배열
+            - y_test: 테스트용 실제 발전량(kWh) 배열
+              (SequenceDataset이 슬라이딩 윈도우 정답을 만드는 데 필요해서 함께 받음.
+               예측 자체에는 y_test 값이 쓰이지 않고 shape만 맞추는 용도임)
+
+        Returns:
+            - np.ndarray: 예측 발전량(kW) 배열. seq_len만큼 앞이 잘려서
+              len(X_test) - seq_len 개의 값만 반환됨에 유의.
+
+        Raises:
+            - RuntimeError: fit()을 먼저 호출하지 않고 predict()를 호출한 경우.
+              self.model이 None인 상태로 그냥 진행하면 알아보기 어려운 에러가 나므로,
+              여기서 미리 명확한 에러 메시지로 막아준다.
+        """
+        if self.model is None:
+            raise RuntimeError("fit()을 먼저 호출해 모델을 학습시켜야 합니다.")
+            # self.model이 아직 채워지지 않았다는 것은 fit()이 호출된 적 없다는 뜻
+
+        if y_test is None:
+            y_test = np.zeros(len(X_test), dtype=np.float32)
+        testDs = SequenceDataset(X_test, y_test, seq_len=self.seq_len)
+        # 테스트 데이터도 학습 때와 동일한 seq_len으로 슬라이딩 윈도우 구성
+        testLoader = DataLoader(testDs, batch_size=64, shuffle=False)
+        # shuffle=False: 예측 시엔 순서를 유지해야 y_test와 1:1로 정렬이 맞음
+
+        self.model.eval()
+        # 평가모드 전환 (dropout 등 비활성화 - 현재 구조엔 영향 없지만 관례상 명시)
+
+        preds = []
+        for xb, _ in testLoader:
+            # 정답(yb)은 예측 시 필요 없으므로 버림(_)
+            preds.append((self.model(xb) * self.capacity_kw).numpy())
+            # 배치별 예측 결과를 numpy 배열로 변환해 리스트에 쌓음
+
+        return np.concatenate(preds)
+        # 배치별 결과를 이어붙여 하나의 1차원 배열로 반환
