@@ -1,4 +1,28 @@
 # Step 6.2. LSTMPipeline: LSTM 모델의 생성·학습·예측을 하나로 묶어 관리하는 클래스
+
+# h_t: 단기 은닉 상태, c_t: 장기 은닉 상태
+
+# input gate(i_t) = sigmoid(W_ii * x_t + bii + W_hi * h_(t-1) + b_hi) 
+# 입력 게이트로 현재 정보를 얼마나 저장할지 결정
+# forget gate(f_t) = sigmoid(W_if * x_t + b_if + W_hf * h_(t-1) + b_hf)
+# 망각 게이트로 기존 장기 상태를 얼마나 잊을지 결정(기존 정보 얼마나 유지할지 결정)
+
+# candidate state(g_t) = tanh(W_ig * x_t + b_ig + W_hg * h_(t-1) + b_hg)
+# 현재 입력으로부터 새로운 후보 장기 상태(정보)를 생성 (tanh(Hyperbolic Tangent, sigmoid의 4배)로 -1~1 범위로 제한)
+
+# output gate(o_t) = sigmoid(W_io * x_t + b_io + W_ho * h_(t-1) + b_ho)
+# 출력 게이트로 현재 셀의 상태를 얼마나 외부로 출력할지 결정
+
+# cell state(c_t) = f_t * c_(t-1) + i_t * g_t
+# 장기 상태 업데이트/메모리: 기존 장기 상태(c_(t-1))를 forget gate(f_t)로 얼마나 유지할지 결정하고,
+# 새로운 후보 장기 상태(g_t)를 input gate(i_t)로 얼마나 반영할지 결정
+# hidden state(h_t) = o_t * tanh(c_t)
+# 현재 시점의 출력 은닉 상태(h_t)는 장기 상태(c_t)를 tanh로 제한한 후, 출력 게이트(o_t)로 얼마나 외부로 내보낼지 결정
+
+# sequence-to-one 구조: 현재 모델은 24개 전체 시점의 정보가 LSTM 내부 상태에 압축되고,
+# 마지막 hidden state만 FC 레이어로 스칼라 발전량 예측값으로 변환
+
+
 import copy
 import torch
 import torch.nn as nn
@@ -167,10 +191,20 @@ class LSTMPipeline:
         # 매 fit() 호출마다 새 모델을 만들어 self.model에 저장
         # (혹시 다시 fit()을 부르면 이전 학습 내용은 사라지고 새로 학습됨)
 
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(
+            self.model.parameters(), 
+            lr = self.lr)
         # Adam optimizer로 self.model의 모든 파라미터를 업데이트하도록 설정
-        scoreCriterion = ScoreLossFunction(capacity_kw=self.capacity_kw, k=self.loss_k)
-        regressionCriterion = nn.SmoothL1Loss(beta=0.05)
+        # 각 파라미터별 gradientd의 1,2차 이동평균을 이용하여 Adam은 파라미터를 업데이트
+        # m_t = β_1 * m_(t-1) + (1 - β_1) * g_t
+        # v_t = β_2 * v_(t-1) + (1 - β_2) * g_t^2
+        # θ_t = θ_(t-1) - α * m_t / (sqrt(v_t) + ε)
+        # β_1, β_2: 이동평균 계수, g_t: gradient, α: 학습률, ε: 작은 상수(0으로 나누는 것을 방지)
+
+        scoreCriterion = ScoreLossFunction(
+            capacity_kw = self.capacity_kw, 
+            k = self.loss_k)
+        regressionCriterion = nn.SmoothL1Loss(beta = 0.05)
         # FICR 근사만 단독 사용하면 큰 초기 오차에서 sigmoid가 포화된다. 따라서
         # 이용률 기반 SmoothL1을 계속 섞어 입력 의존적인 회귀 기울기를 보장한다.
 

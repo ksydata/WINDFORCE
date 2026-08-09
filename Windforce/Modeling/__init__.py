@@ -11,6 +11,13 @@ from .BaselineModels import BaselineModels
 from .LSTMPipeline import LSTMPipeline, SequenceDataset, _LSTMModel
 from .GroupExperimentRunner import GroupExperimentRunner
 from .WindforceDatasetBuilder import WindforceDatasetBuilder
+from .FeatureVariants import (FeatureVariant, AllFeaturesVariant,
+                               CorrelationFilteredVariant, PCAVariant,
+                               TreeImportanceVariant, make_feature_variant)
+from .LSTMPipelineVersions import (VersionedLSTMPipeline, LSTMPipelineV1,
+                                   LSTMPipelineV2, LSTMPipelineV3,
+                                   make_lstm_pipeline)
+from .VersionedExperimentRunner import VersionedExperimentRunner
 
 __all__ = [
     "BaselineModels",
@@ -19,4 +26,8 @@ __all__ = [
     "_LSTMModel",
     "GroupExperimentRunner",
     "WindforceDatasetBuilder",
+    "FeatureVariant", "AllFeaturesVariant", "CorrelationFilteredVariant",
+    "PCAVariant", "TreeImportanceVariant", "make_feature_variant",
+    "VersionedLSTMPipeline", "LSTMPipelineV1", "LSTMPipelineV2",
+    "LSTMPipelineV3", "make_lstm_pipeline", "VersionedExperimentRunner",
 ]

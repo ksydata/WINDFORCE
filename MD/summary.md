@@ -20,7 +20,7 @@
       - 고풍속 무발전 / 센서 고착
   - Utils(time / wind / spatial)
     - 시간: 시간 주기 인코딩, 짧은 결측 선형보간(30분 단위), LSTM Deep Learning Model용 3차원 sequence 생성
-    - 바람: 풍향을 u,v성분에서 복원 / 여러 고도 풍속으로 전단지수 계산 / 습윤 공기밀도 계산 / 풍력에너지밀도 계산
+    - 바람: 풍향을 u,v성분에서 복원 / 여러 고도 풍속으로 전단지수 계산 / 습윤 공기밀도 계산 / 풍력에너지밀도 계산, 무풍 + 정지 + 고출력 구간 분포 반드시 확인해야 함
     - 공간: 예보 격자 데이터 가까운 4개를 통해, 거리 제곱의 역수로 가중(IDW)
 
 - LSTMPipeline
@@ -37,22 +37,14 @@
     - https://scikit-learn.org/stable/modules/generated/sklearn.svm.SVR.html 
     - https://docs.pytorch.org/docs/2.13/generated/torch.nn.LSTM.html
 
-| Step | 내용 | 사용 클래스 |
-|---|---|---|
-| 1 | 파일 경로 존재 확인 | `WindforceDataLoader.check_paths()` |
-| 2 | SCADA/labels/ldaps/gfs/kpx_info 구조 확인 | `WindforceDataLoader` |
-| 3 | DMS 좌표 파싱 → `turbine_meta`(group/lat/lon/cap_kw) 생성 | 커스텀 `parseDMS()` |
-| 4 | LDAPS·GFS 격자 전처리 + IDW 그룹 집계, SCADA 파워커브 3D 시각화(LOWESS) | `LDAPSFeatureEngineer`, `GFSFeatureEngineer` |
-| 5 | 평가지표·손실함수 더미 검증 | `EvaluationMetrics`, `ScoreLossFunction(k=40)` |
-| 6 | 그룹별 Persistence/SVR/LSTM 학습·평가 | `WindforceDatasetBuilder`, `GroupExperimentRunner`, `LSTMPipeline` |
-| 7 | 스키마 검증 + `submission_baseline5.1.csv` 저장 | 컬럼명 교집합 기반 재추론 |
 
-- `baseline_3`(38셀 단일 노트북)에서 LSTM 3그룹 평균 총점이 0.3859였는데, `baseline_5`에서는 (0.4740+0.5023+0.5026)/3 ≈ **0.493**으로 약 0.11 상승했습니다. `improvement.md`의 진단대로 손실함수 그래디언트 소실(A)과 제출 피처 정렬 버그(B)를 고치니 LSTM이 최소한 "입력에 반응하는" 모델이 된 것으로 보입니다.
-- 다만 여전히 Persistence(직전값 그대로 예측하는 oracle 기준선)가 압도적으로 높습니다. "어제와 비슷하다"는 신호 자체가 매우 강하다는 뜻이고, 아직 LSTM/SVR이 기상 예보에서 그 이상의 가치를 뽑아내지 못하고 있다는 신호로 남아 있습니다. (참고: 이 Persistence는 검증 구간의 직전 *실제값*을 쓰는 oracle 성격이라, 2025년 전체를 한 번에 제출해야 하는 실전 조건에서는 그대로 쓸 수 없는 참고 기준선입니다.)
+  - `baseline_3`(38셀 단일 노트북)에서 LSTM 3그룹 평균 총점이 0.3859였는데, `baseline_5`에서는 (0.4740+0.5023+0.5026)/3 ≈ 0.493으로 약 0.11 상승
+  - `improvement.md`의 진단대로 손실함수 그래디언트 소실(A)과 제출 피처 정렬 버그(B)를 고치니 LSTM이 최소한 "입력에 반응하는" 모델이 된 것
+  - 다만 여전히 Persistence(직전값 그대로 예측하는 oracle 기준선)가 압도적으로 높습니다. "어제와 비슷하다"는 신호 자체가 매우 강하다는 뜻이고, 아직 LSTM/SVR이 기상 예보에서 그 이상의 가치를 뽑아내지 못하고 있다는 신호로 남아 있음. (참고: 이 Persistence는 검증 구간의 직전 실제값을 쓰는 oracle 성격이라, 2025년 전체를 한 번에 제출해야 하는 실전 조건에서는 그대로 쓸 수 없는 참고 기준선)
 
-- 잔차 학습(residual modeling) — Persistence 예측 대비 잔차를 LSTM이 학습하도록 바꾸면 최소 Persistence 수준을 보장하면서 기상 정보로 추가 개선 가능
-- 파워커브 물리 피처 — Step 4-2에서 시각화한 S자 파워커브를 터빈 모델별로 피팅해 피처로 추가
-- 리드타임(`lead_hour`) 구조 활용 — 예보 발행 후 1~24시간 뒤 예측이라는 특성을 명시적으로 반영
-- LightGBM/XGBoost 병행 — 그룹당 2~3만 행 규모면 딥러닝보다 트리 기반이 더 안정적일 가능성
-- 시계열 CV — 현재는 단일 20% 홀드아웃뿐, 계절 블록별 rolling-origin CV 필요
-- 앙상블 — 위 개선 후 Persistence·GBM·LSTM(잔차)을 그룹별 가중 블렌딩
+  - 잔차 학습(residual modeling) — Persistence 예측 대비 잔차를 LSTM이 학습하도록 바꾸면 최소 Persistence 수준을 보장하면서 기상 정보로 추가 개선 가능
+  - 파워커브 물리 피처 — Step 4-2에서 시각화한 S자 파워커브를 터빈 모델별로 피팅해 피처로 추가
+  - 리드타임(`lead_hour`) 구조 활용 — 예보 발행 후 1~24시간 뒤 예측이라는 특성을 명시적으로 반영
+  - LightGBM/XGBoost 병행 — 그룹당 2~3만 행 규모면 딥러닝보다 트리 기반이 더 안정적일 가능성
+  - 시계열 CV — 현재는 단일 20% 홀드아웃뿐, 계절 블록별 rolling-origin CV 필요
+  - 앙상블 — 위 개선 후 Persistence·GBM·LSTM(잔차)을 그룹별 가중 블렌딩
