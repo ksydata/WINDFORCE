@@ -63,6 +63,7 @@ class SpatialUtils:
 
         Args:
             turbine_meta: 터빈 1기 = 1행. ``group``, ``lat``, ``lon``, ``cap_kw`` 컬럼 필수.
+                          ``group``은 1/2/3 또는 ``kpx_group_1/2/3`` 형식을 허용한다.
                           ``cap_kw`` 대신 ``capacity_mw`` 가 있으면 자동으로 kW 환산한다.
             grid_coords:  격자 1개 = 1행. ``latitude``, ``longitude`` 컬럼 필수
                           (index = grid_id).
@@ -77,14 +78,16 @@ class SpatialUtils:
             - 그룹별 집계: W_gj = Σ_i∈g (cap_i × w_ij) / Σ_i∈g cap_i
             - 격자를 통째로 평균하면 세 그룹에 똑같은 예보값이 들어가 거리·고도·바람장 차이가 사라진다.
         """
-        if "cap_kw" not in turbine_meta.columns:
-            if "capacity_mw" in turbine_meta.columns:
-                turbine_meta = turbine_meta.copy()
-                turbine_meta["cap_kw"] = turbine_meta["capacity_mw"] * 1000
+        meta = turbine_meta.reset_index(drop=True).copy()
+        # 원본 DataFrame 변형을 막고 아래 행렬 인덱스와 맞게 행 번호를 다시 매긴다
+
+        missing = [c for c in ("group", "lat", "lon") if c not in meta.columns]
+        if "cap_kw" not in meta.columns:
+            if "capacity_mw" in meta.columns:
+                meta["cap_kw"] = meta["capacity_mw"] * 1000
+                # MW 단위 설비용량을 IDW 그룹 가중에 쓰는 kW 단위로 환산한다
             else:
-                missing = ["cap_kw"]
-        else:
-            missing = []
+                missing.append("cap_kw")
 
         if missing:
             raise KeyError(f"turbine_meta에 필요한 컬럼이 없습니다: {missing}")
@@ -93,7 +96,22 @@ class SpatialUtils:
         if grid_coords.empty:
             raise PreprocessingError("격자 좌표가 비어 있습니다")
 
-        meta = turbine_meta.reset_index(drop=True)
+        meta["group"] = meta["group"].astype(str)
+        # 문자열 키는 보존하고 숫자형 그룹도 안전하게 판별할 수 있도록 표현을 통일한다
+        numeric_group = pd.to_numeric(meta["group"], errors="coerce")
+        # 정수·실수·숫자 문자열로 들어온 그룹 번호를 숫자로 변환한다
+        integer_group = numeric_group.notna() & numeric_group.mod(1).eq(0)
+        # 1.5 같은 비정수 값은 그룹 번호로 묵시 변환하지 않고 아래 unknown 검사에서 막는다
+        meta.loc[integer_group, "group"] = (
+            "kpx_group_" + numeric_group.loc[integer_group].astype(int).astype(str)
+        )
+        # 정수 그룹 번호를 KPX_GROUPS와 같은 문자열 키로 자동 승격한다
+
+        unknown = sorted(set(meta["group"]) - set(KPX_GROUPS))
+        if unknown:
+            raise ValueError(f"turbine_meta의 group 값이 KPX_GROUPS에 없습니다: {unknown}")
+            # 오타·지원하지 않는 그룹을 조용히 0 가중치로 만들지 않고 즉시 실패시킨다
+
         grid_lat = grid_coords["latitude"].to_numpy(dtype=float)
         grid_lon = grid_coords["longitude"].to_numpy(dtype=float)
         distance = np.zeros((len(meta), len(grid_coords)))
@@ -118,6 +136,22 @@ class SpatialUtils:
             weight_group[j] = (
                 (caps[:, None] * weight_turbine[selected]).sum(axis=0) / (caps.sum() + 1e-8)
             )
+
+        row_sums = weight_group.sum(axis=1)
+        # 각 그룹 가중치 행은 격자 전체에 대해 합이 1이어야 한다
+        active_rows = np.array([group in set(meta["group"]) for group in KPX_GROUPS])
+        # 부분 그룹 호출도 유지하면서 실제 메타에 존재하는 그룹 행만 정규화 여부를 검사한다
+        if (
+            not np.isfinite(weight_group).all()
+            or not active_rows.any()
+            or not np.allclose(row_sums[active_rows], 1.0)
+        ):
+            raise PreprocessingError(
+                f"IDW 가중치가 유효하지 않습니다. turbine_meta의 group 키와 cap_kw를 확인하세요: "
+                f"행 합계={row_sums.tolist()}"
+            )
+            # 그룹 키 불일치·0 설비용량·비유한값이 결과 피처를 0 행렬로 만드는 것을 차단한다
+
         return weight_group
 
     @staticmethod

@@ -43,6 +43,8 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
+from .utils.spatial_utils import compute_group_weight
+
 
 KPX_GROUPS = ("kpx_group_1", "kpx_group_2", "kpx_group_3")
 # 그룹 이름 순서를 고정해 표·행렬 인덱스에서 계속 재사용한다
@@ -467,41 +469,8 @@ class FeatureEngineer(ABC):
             - 그룹별 집계 W_gj = Σ_i∈g (cap_i x w_ij) / Σ_i∈g cap_i
             - 격자를 통째로 평균하면 세 그룹에 똑같은 예보값이 들어가 거리·고도·바람장 차이가 사라진다
         """
-        required = ["group", "lat", "lon", "cap_kw"]
-        missing = [c for c in required if c not in turbine_meta.columns]
-        if missing:
-            raise KeyError(f"turbine_meta에 필요한 컬럼이 없습니다: {missing}")
-
-        meta = turbine_meta.reset_index(drop = True)
-        # 아래 행렬 인덱스와 맞추기 위해 행 번호를 0부터 다시 매긴다
-        grid_lat = grid_coords["latitude"].to_numpy()
-        grid_lon = grid_coords["longitude"].to_numpy()
-
-        distance = np.zeros(( len(meta), len(grid_coords) ))
-        for i in range(len(meta)):
-            distance[i] = self.computeHaversineDistance(
-                meta.loc[i, "lat"], meta.loc[i, "lon"], grid_lat, grid_lon
-            )
-
-        weight_turbine = np.zeros_like(distance)
-        for i in range(len(meta)):
-            near = np.argsort(distance[i])[:k]
-            # 거리가 가까운 순으로 k개 격자를 고른다
-            inverse = 1.0 / np.maximum(distance[i, near], MIN_DISTANCE_KM) ** power
-            weight_turbine[i, near] = inverse / inverse.sum()
-            # 합이 1이 되도록 정규화. 터빈이 격자점 위에 있어도 0으로 나누지 않는다
-
-        weight_group = np.zeros(( len(KPX_GROUPS), len(grid_coords) ))
-        for j, group in enumerate(KPX_GROUPS):
-            selected = (meta["group"] == group).to_numpy()
-            caps = meta.loc[selected, "cap_kw"].to_numpy()
-            weight_group[j] = (
-                (caps[:, None] * weight_turbine[selected]).sum(axis = 0) / (caps.sum() + 1e-8)
-            )
-            # 그룹에 터빈이 하나도 없을 때 0으로 나누는 것을 방지하기 위해 1e-8을 더함
-
-        return weight_group
-        # shape = (3그룹, 격자수)인 가중치 행렬 반환. 행 합계는 1이다
+        return compute_group_weight(turbine_meta, grid_coords, k = k, power = power)
+        # 공통 유틸의 그룹 키 정규화·영행렬 가드를 재사용해 두 구현의 동작 차이를 막는다
 
     def transformToGroupFeature(
         self,
