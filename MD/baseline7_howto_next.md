@@ -1,95 +1,103 @@
-# baseline7_howto_next — FICR 개선 작업 지시서
+# baseline7_howto_next — FICR 작업 지시서
 
-> 작성일: 2026-08-12
+> 작성일: 2026-08-12 / 개정: 2026-08-13
 > 선행 산출물: `BASELINE/baseline_7.ipynb`, `BASELINE/baseline_7_results.csv`, `BASELINE/baseline_7_summary.csv`
-> 이 문서는 **그대로 구현 가능한 작업 카드** 형식이다. 코드 스타일은 [`MD/coding_convention.md`](coding_convention.md)를 따른다.
+> 근거 문서: [`MD/baseline7_workspace_summary.md`](baseline7_workspace_summary.md)(워크스페이스·데이터 구조),
+> [`MD/baseline7_idea_evaluation.md`](baseline7_idea_evaluation.md)(아이디어 1~6 심층 검증 전문 — 이 문서의
+> 모든 기술적 판단 근거). **판정 요약만 필요하면 각 카드의 "검증 가설 및 KPI" 절만 읽는다.**
+> 코드 스타일은 [`MD/coding_convention.md`](coding_convention.md)를 그대로 따른다.
 
-### 실행자(Sonnet)에게
+### 실행자에게
 
-1. **셀은 문자열로 찾아라.** 노트북을 실행하면 셀 인덱스가 밀린다. 각 카드에 인용한
-   고유 문자열(`"LGB_PARAMS = {"` 등)로 셀을 찾고, **모든 편집을 끝낸 뒤** 위에서부터 실행한다.
-2. **새 패키지 파일을 만들지 마라.** `baseline_5_howto_next.md`의 카드 A~K와 달리, 이 문서의
-   클래스·함수는 전부 `baseline_7.ipynb` 안에 새 셀로 추가한다(`FeatureSelector`,
-   `OfficialScoreMonitor`가 이미 그렇게 되어 있는 것과 동일한 관례).
-3. **탐색은 반드시 검증 구간(뒤 20%)에서만 한다.** 평가(2025년, 라벨 없음) 구간 정보가
-   보정·앙상블 가중치 탐색에 섞이면 안 된다.
-4. 카드 하나를 끝낼 때마다 그 카드의 "검증" 기준을 실제로 계산해 **수치를 보고**한다.
-   "수정했습니다"만으로는 완료가 아니다.
-5. 카드 H/I/K(커널 고정·실행시간·리포 위생, `baseline5_howto_next.md` 하단)는
-   `baseline_7.ipynb`에 **이미 반영되어 있다** (`EXPECTED_VENV` 가드, `torch.set_num_threads(8)`,
-   `MODEL_PARAMS["batch_size"]=256`, `eval_X=/eval_y=` API, `prep/` gitignore 확인함).
-   다시 만들지 마라.
+1. 셀 번호가 아니라 부록 A의 **문자열 앵커**로 셀을 찾고, 편집을 끝낸 뒤 위에서부터 실행한다.
+2. 신규 클래스·함수는 `baseline_7.ipynb` 안에 추가한다. 새 패키지는 자동 설치하지 않는다.
+3. 보정·앙상블·HPO·VMD 설정은 검증 구간(뒤 20%)에서만 정하고, 2025년 평가 구간에는 고정값만 적용한다.
+4. 카드마다 검증 총점과 KPI 수치를 남긴다. 기준선보다 좋아지지 않으면 즉시 종료한다.
+5. 커널·실행시간·리포 위생 카드(H/I/K)는 이미 반영됐으므로 다시 만들지 않는다.
+6. 채택 기준은 항상 `EvaluationMetrics.summarize`의 검증 총점이다.
 
 ---
 
-## 0. 현재 위치 (baseline_7 실행 결과)
+## 1. 개요 및 고도화 목표 (Executive Summary)
 
-검증 조건: 그룹별 시간순 마지막 20% hold-out, `TEST_RATIO = 0.2`, 첫 24시간(SEQ_LEN)은
+### 1-1. 현재 위치 — baseline_7 실행 결과
+
+검증 조건: 그룹별 시간순 마지막 20% hold-out, `TEST_RATIO = 0.2`, 첫 24시간(`SEQ_LEN`)은
 모든 모델 비교에서 동일하게 제외.
 
-`baseline_7_results.csv` 기준, 그룹별 **제출 가능 모델 중 검증 총점 최고** (Step 4 `best_by_group`):
+`baseline_7_results.csv` 기준, 그룹별 **제출 가능 모델 중 검증 총점 최고**(Step 4 `best_by_group`):
 
 | 그룹 | 선택 모델 | NMAE | FICR | 총점 |
 |---|---|---|---|---|
 | 1 | `LGBM_selected` | 0.0804 | 0.3914 | 0.6555 |
 | 2 | `LSTM_v2_shap_selected` | 0.0860 | 0.4613 | 0.6877 |
 | 3 | `LSTM_v1_shap_selected` | 0.0819 | 0.3985 | 0.6583 |
-| — | **3그룹 평균(=실제 제출 기대치)** | **0.0828** | **0.4171** | **0.6672** |
-| — | `Persistence_oracle_lag1` (비교 기준, 제출 불가) | 0.0467 | 0.6398 | 0.7966 |
+| — | **3그룹 평균(= 실제 제출 기대치, 이하 "기준선")** | **0.0828** | **0.4171** | **0.6672** |
+| — | `Persistence_oracle_lag1`(비교 기준, 제출 불가) | 0.0467 | 0.6398 | 0.7966 |
 
-> `baseline_7_summary.csv`의 `official_score`(모델 계열별 3그룹 단순 평균, 최고 0.6627)는
-> **실제 제출 총점과 다르다.** 실제 제출은 그룹마다 다른 모델을 섞어 쓰므로(위 표),
-> 진짜 기준선은 **0.6672**다. 이 문서의 모든 "개선" 판단은 이 숫자 및 그룹별 개별 값과 비교한다.
+**격차 분해**(Persistence oracle 대비 0.1294점 차이):
 
-**격차 분해** (Persistence oracle 대비 0.1294점 차이):
-- NMAE 기여분: `0.5 × (0.0828 − 0.0467) = 0.0181` (14%)
-- FICR 기여분: `0.5 × (0.6398 − 0.4171) = 0.1114` (**86%**)
+```
+NMAE 기여분 = 0.5 × (0.0828 − 0.0467) = 0.0181   (14%)
+FICR 기여분 = 0.5 × (0.6398 − 0.4171) = 0.1114   (86%)
+```
 
-즉 남은 격차의 거의 전부가 FICR이다. NMAE는 이미 오차율 4%p 이내로 근접했지만,
-FICR은 계단형 정산단가 구조 때문에 "평균 오차가 조금 준다"만으로는 거의 개선되지 않는다.
+### 1-2. 고도화 목표 — "평균 오차 감소"에서 "정산 구간 안착"으로 재정의
+
+남은 격차의 86%가 FICR이라는 사실은, 이 문서의 모든 성공 기준을 **NMAE를 조금 더 낮추는
+것**이 아니라 **시간별 오차율이 정산단가 4원 구간(≤6%)에 들어가는 비율(=밴드 안착률)을
+높이는 것**으로 재정의해야 한다는 뜻이다. FICR은 발전량 가중 계단함수이므로, 평균 오차가
+줄어도 6%를 살짝 넘는 시간이 많으면 점수는 거의 오르지 않는다. 반대로 평균 오차가 그대로여도
+"6.5% 오차 시간"을 "5.9% 오차"로 밀어넣으면 점수가 즉시 뛴다. 이 문서의 카드 A~G는 전부
+이 재정의를 전제로 설계됐다.
+
+**정량 목표(단계별):**
+
+| 단계 | 목표 | 판단 기준 |
+|---|---|---|
+| Phase 1 (카드 A/B) | 밴드 분포 가시화 + 저비용 보정으로 얻을 수 있는 상한 확인 | `band_df`, `calibration_df` 실측 |
+| Phase 2 (카드 C/D) | 그룹별 검증 총점이 기준선(0.6555/0.6877/0.6583)을 **모두** 상회 | `predictions_store` 재집계 |
+| Phase 3 (카드 E/F) | 3그룹 평균 총점이 **0.6672 → 0.68 이상**으로 상승(잠정 목표, 카드 A 실측 후 재조정) | `aggregateOfficialScore` |
+| Phase 4 (카드 G, 선택) | 그룹1 VMD 피처 추가로 **+0.005 이상** 추가 개선(1차 게이트) | Step 2 재실행 비교 |
+
+목표 수치(0.68)는 현재 격차의 86%가 FICR이라는 진단에서 나온 **작업 방향성**이지, 이 문서가
+보장하는 확정치가 아니다 — 카드 A~F 각각의 실측 결과로 계속 갱신한다.
+
+### 1-3. 5대 고도화 전략 → 카드 매핑
+
+| 고도화 전략 | 대응 카드 | 핵심 |
+|---|---|---|
+| ① 오차율 밴드 진단 + 예측값 저장소 + 자동 분기 | **카드 A** | `predictions_store`, `summarizeErrorBand`, `recommendAction` |
+| ② FICR-aware 커스텀 목적함수(LightGBM) + LSTM 정렬 | **카드 C** | `makeFicrObjective`(2단계 웜업 포함), `ScoreLossFunction`과의 설계 원칙 정렬 |
+| ③ VMD 입력 분해 + IMF 특징 선택(mRMR/PCC-GRA) | **카드 G** | 입력(NWP) 한정 VMD, mRMR 축소 → 기존 SHAP 선별 |
+| ④ 지능형 HPO(메타휴리스틱/베이지안) | **카드 D** | GWO(1순위, 순수 numpy) 기반 `loss_k`/`regression_weight` 연속 탐색 |
+| ⑤ 시각대별 사후 보정 + 앙상블 | **카드 B(확장) / 카드 E / 카드 F** | `FicrCalibrator`의 시각대 확장, 진단 매트릭스, 가중 블렌딩 |
+
+각 전략의 이론적 타당성·리스크 검증 전문은 `MD/baseline7_idea_evaluation.md`의 아이디어 1~6에
+있다. 이 문서는 그 검증 결과를 **그대로 구현 가능한 카드**로 옮긴 것이다.
 
 ---
 
-## 1. 진단: FICR이 아직 낮은 이유
+## 2. 5대 핵심 실행 로드맵 (Action Items: Cards A~G)
 
-- **LightGBM 계열(`LGBM_full`/`LGBM_selected`)은 FICR을 전혀 모른다.** `LGB_PARAMS["objective"] =
-  "regression_l1"`로 순수 절대오차만 최소화한다. 6%/8% 문턱 근처에서의 정산단가 손실은
-  학습 목적함수에 어떤 신호도 주지 않는다.
-- **LSTM 계열은 이미 `ScoreLossFunction`(softFICR)을 섞어 쓴다** (`warmup_epochs=15` 이후
-  `regression_weight=0.75`로 SmoothL1과 혼합, Step 3 `OfficialScoreMonitor`가 공식 총점으로
-  조기종료). 그런데도 FICR이 0.38~0.46 수준에 머문다 — 손실함수 자체보다 하이퍼파라미터
-  (`loss_k`, `regression_weight`)가 전 그룹 공통 고정값이라는 점, 그리고 사후 보정·앙상블이
-  전혀 없다는 점이 남은 문제로 보인다.
-- **예측값을 사후 보정(post-hoc calibration)하는 로직이 없다.** 학습된 모델의 출력이
-  전반적으로 과소/과대 추정 편향이 있다면, 재학습 없이 스칼라 변환만으로 6% 밴드 안에
-  들어가는 시간을 늘릴 수 있는데 이 시도가 baseline 7에 없다.
-- **시간별 오차율이 실제로 어느 구간(≤6/6~8/>8%)에 몰려 있는지 측정한 적이 없다.**
-  FICR 0.39 vs 0.46이 ">8% 비율이 큰 것"인지 "6~8% 비율이 큰 것"인지에 따라 다음 대응이
-  완전히 다른데, 이 진단 자체가 baseline 7 어디에도 없다. → **카드 A가 다른 모든 카드의 전제.**
-- **리드타임(`lead_hour`/`gfs_lead_hour`)은 원시 피처로만 들어가 있고**(`WindforceDatasetBuilder
-  .featureCols`가 제외하지 않으므로 학습에는 이미 포함됨), 리드타임별 오차 특성을 진단하거나
-  활용하는 로직은 없다.
+### 카드 A. [P0] 오차율 밴드 진단 + 예측값 저장소 + 자동 분기
 
----
+**[목적]** 카드 B~G 전부가 "검증 구간 예측값"을 필요로 하므로, 먼저 그룹·모델별 예측을
+저장하고 오차율 밴드(`≤6%`/`6~8%`/`>8%`)를 계산한 뒤, 그 결과로 카드 B(보정)와 카드 C(재학습)
+중 어느 쪽에 자원을 먼저 투입할지 **규칙 기반으로 자동 판단**한다(`baseline7_idea_evaluation.md`
+아이디어 3).
 
-## 카드 A. [P0] 오차율 밴드 진단 + 예측값 저장소 확보
+**[기술적 세부 사양]**
 
-### 문제
-현재 Step 2/Step 3 루프는 `pred_full`/`pred_selected`/`pred`를 그룹 반복마다 지역 변수로만
-쓰고 버린다. 카드 B~F가 전부 "검증 구간 예측값"을 필요로 하므로, 먼저 그룹·모델별 예측을
-저장하고 그 위에서 오차율 밴드(≤6%/6~8%/>8%)를 계산해야 한다.
-
-### 구현 단계
-
-1. **문자열 `lgb_models: dict[tuple[int, str], lgb.LGBMRegressor] = {}`가 있는 셀**(Step 2 루프)
-   맨 위, 그 선언 바로 아래에 저장소를 하나 추가한다.
+1. `lgb_models: dict[tuple[int, str], lgb.LGBMRegressor] = {}`가 있는 셀(Step 2 루프) 맨 위에
+   저장소를 선언한다.
 
    ```python
    predictions_store: dict[tuple[int, str], tuple[np.ndarray, np.ndarray]] = {}
-   # (그룹, 모델명) -> (예측 kWh 배열, 실제 kWh 배열). 카드 A~F가 재학습 없이 재사용한다
+   # (그룹, 모델명) -> (예측 kWh 배열, 실제 kWh 배열). 카드 A~G가 재학습 없이 재사용한다
    ```
 
-   같은 셀에서 `pred_full`, `pred_selected`, `persistence`를 만든 직후 각각 한 줄씩 추가한다.
+   같은 셀에서 `pred_full`, `pred_selected`, `persistence`를 만든 직후 각각 저장한다.
 
    ```python
    predictions_store[(group, "LGBM_full")] = (pred_full, actual_aligned)
@@ -97,20 +105,19 @@ FICR은 계단형 정산단가 구조 때문에 "평균 오차가 조금 준다"
    predictions_store[(group, "Persistence_oracle_lag1")] = (persistence, actual_aligned)
    ```
 
-2. **문자열 `MODEL_PARAMS = {`가 있는 셀**(Step 3 루프)에서 `summary = summarizeAll(...)` 바로
-   아래에 추가한다.
+2. `MODEL_PARAMS = {`가 있는 셀(Step 3 루프)에서 `summary = summarizeAll(...)` 바로 아래에
+   LSTM v1/v2/v3의 검증 예측도 동일하게 저장한다.
 
    ```python
    predictions_store[(group, model_name)] = (pred, actual)
-   # LSTM v1/v2/v3의 검증 예측도 같은 저장소에 모아 카드 B~F에서 재사용한다
    ```
 
-3. **Step 4 aggregation 셀**(`def aggregateOfficialScore(result_df: pd.DataFrame) -> pd.DataFrame:`)
-   맨 아래, `print(f"✅ 요약 저장: {summary_path}")` 다음에 새 진단 셀을 추가한다.
+3. Step 4 aggregation 셀(`def aggregateOfficialScore(result_df: pd.DataFrame) -> pd.DataFrame:`)
+   맨 아래, `print(f"✅ 요약 저장: {summary_path}")` 다음에 진단 셀을 추가한다.
 
    ```python
    def summarizeErrorBand(pred: np.ndarray, actual: np.ndarray, group: int) -> pd.Series:
-       """시간별 오차율을 FICR 정산단가 구간으로 나눠 비율을 계산하는 함수
+       """시간별 오차율을 FICR(오차가 작을수록 단가가 높은 점수) 구간으로 나눠 비율을 계산하는 함수
 
        Args:
            - pred, actual: 검증 구간 예측·실제 발전량(kWh) 배열
@@ -130,39 +137,70 @@ FICR은 계단형 정산단가 구조 때문에 "평균 오차가 조금 준다"
        return band.value_counts(normalize=True).reindex(["≤6%", "6~8%", ">8%"])
        # 세 구간의 시간 비율 합이 1이 되는 Series를 반환한다
 
+   def recommendAction(band_share: pd.Series, gt8_dominance_ratio: float = 1.5,
+                        gt8_absolute_floor: float = 0.15, mid_band_floor: float = 0.10) -> str:
+       """오차 밴드 비율로부터 카드 B/C 중 무엇을 우선할지 규칙 기반으로 추천하는 함수
+
+       Args:
+           - band_share: summarizeErrorBand()의 반환값, 인덱스 ["≤6%","6~8%",">8%"]
+           - gt8_dominance_ratio: ">8%"가 "6~8%"의 이 배수 이상이면 카드 C(재학습) 우선
+           - gt8_absolute_floor: ">8%" 절대 비율이 이 값 이상이면 배수와 무관하게 카드 C 우선
+           - mid_band_floor: ">8%"는 낮지만 "6~8%"가 이 값 이상이면 카드 B(보정)만으로 개선 여지
+
+       Logic:
+           - ">8%"는 FICR 기여가 0원이므로 이 비율을 줄이는 것이 총점에 가장 직접적이다.
+             그래서 ">8%" 조건을 "6~8%" 조건보다 먼저 검사한다(우선순위 비대칭).
+           - 세 조건 모두 해당 없으면 이미 양호하므로 원안(best_by_group) 유지를 권고한다.
+           - 이 함수의 출력은 "권고"일 뿐 강제가 아니다. 카드 B는 비용이 거의 없으므로 권고와
+             무관하게 항상 먼저 시도하고, 이 함수는 "카드 C에 자원을 더 투자할 가치가 있는가"만
+             판단하는 데 쓴다(baseline7_idea_evaluation.md 아이디어 3-3 근거).
+       """
+       gt8, mid = band_share[">8%"], band_share["6~8%"]
+       if gt8 >= gt8_absolute_floor or (mid > 0 and gt8 >= gt8_dominance_ratio * mid):
+           return "카드 C 우선 (근본적 재학습 — FICR-aware 목적함수)"
+       if mid >= mid_band_floor:
+           return "카드 B 우선 (저비용 사후 보정으로 6~8%를 6% 이하로 밀어넣기 시도)"
+       return "카드 B/C 착수 전 원안 유지 — 이미 밴드 분포 양호"
+
    band_rows = []
    for (group, model_name), (pred, actual) in predictions_store.items():
        share = summarizeErrorBand(pred, actual, group)
-       band_rows.append({"group": group, "model_name": model_name, **share.to_dict()})
+       band_rows.append({
+           "group": group, "model_name": model_name, **share.to_dict(),
+           "recommended_action": recommendAction(share),
+       })
    band_df = pd.DataFrame(band_rows).sort_values(["group", ">8%"])
    display(band_df)
-   # 그룹·모델별 밴드 분포를 한 표로 비교한다. best_by_group 모델의 ">8%" 값이 카드 B/C의 목표치다
+   # 그룹·모델별 밴드 분포와 권고 조치를 한 표로 비교한다
    ```
 
-### 검증 기준
-- `band_df`에서 `best_by_group`에 해당하는 6개 행(그룹×모델)의 `">8%"` 비율을 실행 로그에 보고한다.
-- 세 구간 합이 각 행마다 1.0인지 확인한다(반올림 오차 허용).
+**[데이터 누수 방지책]** `predictions_store`는 검증 구간(뒤 20%) 예측만 담는다 — 평가(2025년)
+구간 예측을 여기 섞지 않는다. `recommendAction`의 임계값(1.5배/15%/10%)은 사전 추정치(prior)일
+뿐이므로, 실측 `band_df`가 그룹 간 편차를 크게 보이면 그룹별로 재조정한다
+(`baseline7_idea_evaluation.md` 아이디어 3-2).
 
-### 예상 효과
-점수를 올리지 않지만, 카드 B(보정)와 카드 C(커스텀 목적함수) 중 **어느 쪽이 더 효과적일지**를
-데이터로 판단할 수 있게 한다. `>8%` 비율이 크면 카드 C(근본적 재학습)가, `6~8%`가 크고 `>8%`는
-작으면 카드 B(가벼운 보정)만으로도 충분할 가능성이 높다.
+**[검증 가설 및 KPI]**
+- `band_df`에서 `best_by_group`에 해당하는 6개 행의 `">8%"` 비율과 `recommended_action`을
+  실행 로그에 보고한다.
+- 세 구간 합이 각 행마다 1.0인지 확인한다(반올림 오차 허용).
+- 가설: `>8%` 비율이 크면 카드 C가, `6~8%`가 크고 `>8%`는 작으면 카드 B만으로도 충분할
+  가능성이 높다 — 이 가설은 `recommended_action` 컬럼으로 자동 검증된다.
 
 ---
 
-## 카드 B. [P1] 사후 보정(post-hoc calibration) — 재학습 없이 먼저 시도
+### 카드 B. [P1] 사후 보정(post-hoc calibration) — 전역 + 시각대별 확장
 
-### 문제
-재학습 비용 없이 예측값에 아핀 변환만 적용해 검증 총점을 높일 수 있는지 확인하지 않았다.
-비용이 거의 없으므로 카드 C보다 먼저 시도한다.
+**[목적]** 재학습 비용 없이 예측값에 아핀 변환만 적용해 검증 총점을 높일 수 있는지 확인한다.
+비용이 거의 없으므로 카드 C보다 먼저 시도하며, 카드 E의 시각대 진단 결과가 불균일하면 시각대
+차원으로 확장한다(`baseline7_idea_evaluation.md` 아이디어 2-4의 저비용 대안 (b)).
 
-### 구현 단계
+**[기술적 세부 사양]**
 
-1. 카드 A 진단 셀 바로 아래에 새 셀을 추가한다.
+1. 카드 A 진단 셀 바로 아래에 전역 보정 클래스를 추가한다.
 
    ```python
    class FicrCalibrator:
-       """예측값에 단조 아핀 보정을 적용해 검증 총점을 최대화하는 클래스
+       """예측값에 단조 아핀(기울기와 절편으로 만드는 직선) 보정을 적용하는 클래스
 
        사용 순서:
            calibrator = FicrCalibrator(capacity_kw=RATED_CAPACITY_KW[group]).fit(pred, actual, group)
@@ -173,7 +211,6 @@ FICR은 계단형 정산단가 구조 때문에 "평균 오차가 조금 준다"
            - (a, b) 격자탐색으로 검증 구간 공식 총점이 최대인 조합을 찾는다
            - 반드시 fit()에 넘긴 예측·실제값(검증 구간)에서만 (a, b)를 찾는다
        """
-
        A_GRID = np.linspace(0.85, 1.15, 21)
        B_RATIO_GRID = np.linspace(-0.02, 0.02, 21)
        # b는 설비용량 비율로 탐색한 뒤 capacity_kw를 곱해 kWh 단위로 환산한다
@@ -200,8 +237,8 @@ FICR은 계단형 정산단가 구조 때문에 "평균 오차가 조금 준다"
            return np.clip(self.a_ * pred + self.b_, 0.0, self.capacity_kw)
    ```
 
-2. 같은 셀 아래에서 `predictions_store`의 모든 항목에 적용해 개선 여부를 표로 만든다
-   (`Persistence_oracle_lag1`은 비교 대상에서 제외한다).
+2. 같은 셀 아래에서 `predictions_store`의 모든 항목(`Persistence_oracle_lag1` 제외)에 적용해
+   개선 여부를 표로 만든다.
 
    ```python
    calibration_rows = []
@@ -217,157 +254,280 @@ FICR은 계단형 정산단가 구조 때문에 "평균 오차가 조금 준다"
            "ficr_before": before["ficr"], "ficr_after": after["ficr"],
            "a": calibrator.a_, "b_kw": calibrator.b_,
        })
-   calibration_df = pd.DataFrame(calibration_rows).sort_values(
-       "score_after", ascending=False
-   )
+   calibration_df = pd.DataFrame(calibration_rows).sort_values("score_after", ascending=False)
    display(calibration_df)
    ```
 
-3. `score_after > score_before`인 (그룹, 모델) 조합의 `(a, b)`를 보관해 두었다가, **카드 F에서
+3. **시각대 확장(카드 E 결과가 "불균일"일 때만 실행).** `FicrCalibrator`를 상속해 시각대
+   인자를 받는 버전을 추가한다.
+
+   ```python
+   class DiurnalFicrCalibrator(FicrCalibrator):
+       """target_hour_ldaps 3구간(단기/중기/장기)별로 (a, b)를 독립적으로 탐색하는 확장 클래스
+
+       Logic:
+           - 구간마다 표본 수가 카드 A 대비 1/3로 줄어드므로, 표본이 너무 적으면(예: <500시간)
+             과적합 위험이 있다는 것을 fit() 호출부에서 확인해야 한다(카드 E §검증 가설 참고)
+           - 구간별 (a_h, b_h)를 dict로 보관하고, transform()은 hour_bucket 배열을 받아
+             구간별로 다른 변환을 적용한다
+       """
+       def fit(self, pred: np.ndarray, actual: np.ndarray, group: int,
+               hour_bucket: np.ndarray) -> "DiurnalFicrCalibrator":
+           self.params_: dict[str, tuple[float, float]] = {}
+           for bucket in np.unique(hour_bucket):
+               mask = hour_bucket == bucket
+               sub = FicrCalibrator(self.capacity_kw).fit(pred[mask], actual[mask], group)
+               self.params_[bucket] = (sub.a_, sub.b_)
+           return self
+
+       def transform(self, pred: np.ndarray, hour_bucket: np.ndarray) -> np.ndarray:
+           out = pred.copy()
+           for bucket, (a, b) in self.params_.items():
+               mask = hour_bucket == bucket
+               out[mask] = np.clip(a * pred[mask] + b, 0.0, self.capacity_kw)
+           return out
+   ```
+
+4. `score_after > score_before`인 (그룹, 모델) 조합의 `(a, b)`를 보관해 두었다가, **카드 F에서
    최종 제출 모델로 채택될 경우** Step 5 최종 셀(`def fitFinalLightGBM(`이 있는 셀)의 예측 생성
    직후에 같은 변환을 적용한다. 검증 구간에서 찾은 `(a, b)`를 그대로 재사용하고, 평가 구간
    데이터로 다시 탐색하지 않는다.
 
-### 검증 기준
-- `calibration_df`에서 `score_after`가 `score_before`보다 낮아지는 행이 있으면 그 모델은
-  보정을 적용하지 않는다(항등 변환 `a=1, b=0`이 최선이라는 뜻이므로 채택하지 않는 것이 맞다).
-- 그룹별 `best_by_group` 후보의 `score_after` 최댓값이 카드 0의 기준선(0.6555/0.6877/0.6583)을
-  넘는지가 1차 채택 기준이다.
+**[데이터 누수 방지책]** `(a, b)`(전역·시각대별 모두)는 검증 구간에서만 탐색한다. 평가
+구간에서는 `fit()`을 다시 호출하지 않고 검증 구간에서 고정한 파라미터를 `transform()`에만
+적용한다. `DiurnalFicrCalibrator`도 동일 원칙 — 시각대 구간 경계(`target_hour_ldaps` 기준)는
+카드 E가 정한 고정 구간을 그대로 쓴다.
 
-### 예상 효과
-비용이 거의 없는 카드이므로 큰 개선을 기대하기보다는, "얼마나 쉽게 얻을 수 있는 부분인지"를
-먼저 확인해 카드 C/D에 들일 노력의 우선순위를 정하는 데 쓴다.
+**[검증 가설 및 KPI]**
+- `calibration_df`에서 `score_after < score_before`인 행은 보정을 적용하지 않는다(항등 변환이
+  최선이라는 뜻).
+- 그룹별 `best_by_group` 후보의 `score_after` 최댓값이 기준선(0.6555/0.6877/0.6583)을 넘는지가
+  1차 채택 기준이다.
+- 시각대 확장은 카드 E의 "불균일" 판정(§카드 E)이 나온 그룹에서만 시도하고, 전역 보정 대비
+  검증 총점이 더 높을 때만 채택한다.
 
 ---
 
-## 카드 C. [P1] LightGBM에 FICR-aware 커스텀 목적함수 적용
+### 카드 C. [P1] LightGBM FICR-aware 커스텀 목적함수 + LSTM 정렬
 
-### 문제
-`LGB_PARAMS["objective"] = "regression_l1"`은 FICR 신호를 전혀 받지 않는다. LSTM은 이미
-`ScoreLossFunction`으로 FICR을 근사 반영하는데 LightGBM만 빠져 있어 비교가 불공정하다.
+**[목적]** `LGB_PARAMS["objective"] = "regression_l1"`은 FICR 신호를 전혀 받지 않는다. LSTM은
+이미 `ScoreLossFunction`으로 FICR을 근사 반영하는데 LightGBM만 빠져 있어 비교가 불공정하다.
+이 카드는 (1) 수학적으로 검증된 `fobj`/`hess`를 적용하고, (2) LSTM의 웜업 설계 원칙과 정렬해
+학습 안정성을 확보한다(`baseline7_idea_evaluation.md` 아이디어 4).
 
-### 중요 — capacity_kw로 나눌 필요가 없다
+**[기술적 세부 사양 — 수식]**
 
-`trainLightGBM`이 `model.fit(X_train, y_train / capacity_kw, ...)`로 **이미 설비이용률(0~1)을
-타깃으로 학습한다.** 따라서 LightGBM의 raw 예측값과 타깃 모두 이용률 단위이고, 오차율은
-`|pred - actual|`을 capacity_kw로 다시 나눌 필요 없이 **그 자체가 이미 오차율**이다
-(`ScoreLossFunction`의 `errorRatio = |pred_kw - actual_kw| / capacity_kw`와 동일한 값).
+`trainLightGBM`이 `model.fit(X_train, y_train / capacity_kw, ...)`로 이미 설비이용률(0~1)을
+타깃으로 학습하므로, LightGBM raw 예측·타깃 모두 이용률 단위이고 오차율은 `|pred - actual|`을
+capacity_kw로 다시 나눌 필요가 없다.
 
-### 구현 단계
+```
+e = pred - actual,  r = |e|,  w = regression_weight
+g1 = σ(k(r-0.06)),  g2 = σ(k(r-0.08))
+loss(e) = w·|e| + (1-w)·(g1 + 3g2)/4
 
-1. **문자열 `LGB_PARAMS = {`가 있는 셀**의 `trainLightGBM` 함수 위에 새 함수를 추가한다.
+grad = dloss/dpred = sign(e)·[ w + (1-w)·k·(g1(1-g1) + 3g2(1-g2))/4 ]
+hess = d²loss/dpred² = (1-w)·k²·[ g1(1-g1)(1-2g1) + 3g2(1-g2)(1-2g2) ]/4
+```
+
+이 유도는 `baseline7_idea_evaluation.md` 4-1절에서 손으로 재검증되어 코드와 정확히 일치함을
+확인했다.
+
+```python
+def makeFicrObjective(k: float = 40.0, regression_weight: float = 0.7):
+    """LightGBM용 grad(오차 방향)와 hess(오차 변화 민감도)를 반환하는 목적함수 생성 함수
+
+    Args:
+        - k: softFICR 시그모이드 steepness. ScoreLossFunction과 같은 기본값(40.0) 사용
+        - regression_weight: L1 항 가중치. 1이면 순수 L1(기존과 동일), 0이면 순수 FICR 근사
+
+    Logic:
+        - 타깃·예측 모두 설비이용률(0~1) 단위이므로 오차율 e = pred - actual을 그대로 쓴다
+        - hess 하한을 절대값(1e-6)이 아니라 regression_weight에 비례한 상대 하한으로 잡는다.
+          문턱(6%/8%) 근처 소수 표본에서 hess가 수백 배 커지는 비균질 분포가 되면 LightGBM
+          리프 가중치(-Σgrad/(Σhess+λ))가 그 소수 표본에 지배되어 발산할 수 있기 때문이다
+          (baseline7_idea_evaluation.md 4-2절 근거)
+    """
+    def objective(y_true: np.ndarray, y_pred: np.ndarray):
+        e = y_pred - y_true
+        s = np.sign(e)
+        r = np.abs(e)
+
+        g1 = 1.0 / (1.0 + np.exp(-k * (r - 0.06)))
+        g2 = 1.0 / (1.0 + np.exp(-k * (r - 0.08)))
+
+        d_ficr = s * (k * g1 * (1 - g1) + 3.0 * k * g2 * (1 - g2)) / 4.0
+        dd_ficr = (
+            k * k * g1 * (1 - g1) * (1 - 2 * g1)
+            + 3.0 * k * k * g2 * (1 - g2) * (1 - 2 * g2)
+        ) / 4.0
+
+        grad = regression_weight * s + (1.0 - regression_weight) * d_ficr
+        hess_floor = max(1e-2 * (1.0 - regression_weight), 1e-6)
+        # 상대 하한: regression_weight가 클수록(=FICR 항 비중이 작을수록) 하한도 낮춘다
+        hess = np.maximum((1.0 - regression_weight) * np.abs(dd_ficr), hess_floor)
+        return grad, hess
+    return objective
+```
+
+**[기술적 세부 사양 — 2단계 웜업(LSTM 정렬)]** LSTM은 `warmup_epochs=15`까지 SmoothL1
+단독으로 학습해 초기 큰 오차에서 시그모이드가 포화되는 것을 막는다. LightGBM은 표본별
+부스팅이라 "epoch 워밍업" 개념이 없지만, **부스팅 라운드를 2단계로 나눠 동일한 설계 원칙을
+적용**한다(`baseline7_idea_evaluation.md` 4-3절 권고).
+
+```python
+def trainFicrLightGBM(X_train, y_train, X_valid, y_valid, capacity_kw: float,
+                       warmup_rounds: int = 200, k: float = 40.0,
+                       regression_weight: float = 0.7) -> lgb.LGBMRegressor:
+    """1단계 L1 웜업 → 2단계 FICR 혼합 목적함수로 이어 학습하는 함수
+
+    Logic:
+        - 1단계(warmup_rounds): objective="regression_l1"로 대략적인 예측 수준을 먼저 잡는다
+          (LSTM의 SmoothL1 워밍업과 동일한 목적)
+        - 2단계: init_model=1단계 booster로 이어받아 makeFicrObjective로 계속 부스팅한다
+        - min_sum_hessian_in_leaf를 기본값(1e-3)보다 높여(1e-2~1e-1) hess 총합이 작은 리프의
+          추가 분할을 억제한다(baseline7_idea_evaluation.md 4-2절 완화책)
+    """
+    warmup_params = {**LGB_PARAMS, "objective": "regression_l1", "n_estimators": warmup_rounds}
+    model_warmup = lgb.LGBMRegressor(**warmup_params)
+    model_warmup.fit(
+        X_train, y_train / capacity_kw,
+        eval_X=X_valid, eval_y=y_valid / capacity_kw,
+        eval_metric="l1", callbacks=[lgb.log_evaluation(0)],
+    )
+
+    ficr_params = {
+        **LGB_PARAMS, "objective": makeFicrObjective(k, regression_weight),
+        "min_sum_hessian_in_leaf": 0.05,
+    }
+    model_ficr = lgb.LGBMRegressor(**ficr_params)
+    model_ficr.fit(
+        X_train, y_train / capacity_kw,
+        eval_X=X_valid, eval_y=y_valid / capacity_kw,
+        eval_metric="l1", init_model=model_warmup.booster_,
+        callbacks=[lgb.early_stopping(80, verbose=False), lgb.log_evaluation(0)],
+    )
+    return model_ficr
+```
+
+이를 `lgb_models: dict[...] = {}`가 있는 셀(Step 2 루프)에서 `model_selected = trainLightGBM(...)`
+블록 다음 세 번째 후보로 추가한다.
+
+```python
+model_ficr = trainFicrLightGBM(
+    X_train[columns], y_train, X_valid[columns], y_valid,
+    capacity_kw=RATED_CAPACITY_KW[group], k=40.0, regression_weight=0.7,
+)
+lgb_models[(group, "LGBM_ficr")] = model_ficr
+pred_ficr = predictKw(model_ficr, X_valid[columns], capacity_kw)[SEQ_LEN:]
+summary_ficr = summarizeAll(pred_ficr, actual_aligned, group)
+predictions_store[(group, "LGBM_ficr")] = (pred_ficr, actual_aligned)
+records.append({
+    "group": group, "model_name": "LGBM_ficr", "n_features": len(columns),
+    "best_epoch": model_ficr.best_iteration_, **summary_ficr,
+})
+```
+
+`regression_weight`는 원안대로 0.5/0.7/0.9 세 값으로 우선 비교하되(0.5 미만은
+`improvement.md` 2-1절이 지적한 초기 포화 함정 때문에 쓰지 않는다), **카드 D가 이 값과
+`k`를 GWO로 연속 탐색하므로 이 카드에서는 초기 감(sense)만 잡고 최종값은 카드 D 결과로
+대체한다.**
+
+**[데이터 누수 방지책]** 웜업·본학습 모두 `X_train`/`y_train`(학습 구간)에만 `fit`하고,
+`eval_X`/`eval_y`(검증 구간)는 조기종료 판단에만 쓴다 — 이 규칙은 `trainLightGBM`과 동일하다.
+`predictKw`의 `np.clip(..., 0.0, 1.0)` 클리핑은 커스텀 목적함수를 써도 그대로 유지한다.
+
+**[검증 가설 및 KPI]**
+- 카드 A의 `summarizeErrorBand`를 `LGBM_ficr`에도 적용해 `>8%` 비율이 `LGBM_selected`보다
+  줄었는지 확인한다(총점이 같아도 밴드 분포가 개선됐다면 카드 F의 앙상블 후보로 유효하다).
+- 학습 로그에서 `model_ficr`의 검증 손실(`l1`)이 발산하지 않고 단조 또는 준단조로 감소하는지
+  확인한다 — 발산하면 §4 리스크 관리의 "hess 수렴 실패" 대응을 적용한다.
+- 최종 채택은 검증 총점이 기준선을 넘는지로 판단한다.
+
+---
+
+### 카드 D. [P1] 지능형 하이퍼파라미터 최적화 (GWO 기반)
+
+**[목적]** 기존 그리드 탐색(3×3=9격자)은 두 파라미터의 실제 최적점이 격자점 사이에 있으면
+놓치고, 카드 C의 LGBM `k`/`regression_weight`까지 같은 방식으로 넓히면 탐색점이 선형으로
+늘어나 실행시간 예산을 압박한다. `.venv`에 `optuna`/`scikit-optimize` 등 베이지안 최적화
+라이브러리가 설치되어 있지 않음을 실측으로 확인했으므로(§4 리스크 관리), **GWO(Grey Wolf
+Optimizer)를 순수 numpy로 구현**해 연속 공간을 탐색한다(`baseline7_idea_evaluation.md`
+아이디어 6).
+
+**[기술적 세부 사양]**
+
+1. `MODEL_PARAMS = {`가 있는 셀 근처에 GWO 클래스를 추가한다.
 
    ```python
-   def makeFicrObjective(k: float = 40.0, regression_weight: float = 0.7):
-       """LightGBM용 (grad, hess)를 반환하는 FICR-aware L1 혼합 목적함수를 만드는 팩토리 함수
+   class GreyWolfOptimizer:
+       """GWO(후보 설정을 무리처럼 비교하는 방법)로 하이퍼파라미터를 탐색하는 클래스
 
-       Args:
-           - k: softFICR 시그모이드 steepness. ScoreLossFunction과 같은 기본값(40.0) 사용
-           - regression_weight: L1 항 가중치. 1이면 순수 L1(기존과 동일), 0이면 순수 FICR 근사
+       사용 순서:
+           gwo = GreyWolfOptimizer(bounds=[(10,100),(0.5,0.95)], n_wolves=5, max_iter=4, seed=SEED)
+           best_params, best_score, history = gwo.optimize(objective_fn)
 
        Logic:
-           - 타깃·예측 모두 설비이용률(0~1) 단위이므로 오차율 e = pred - actual을 그대로 쓴다
-           - softPrice(r) = 4 - sigmoid(k(r-0.06)) - 3*sigmoid(k(r-0.08)), r = |e|
-           - loss_i = regression_weight*|e| + (1-regression_weight)*(1 - softPrice(r)/4)
-           - L1 항의 2차 도함수는 거의 어디서나 0이므로 hess에 1e-6 하한을 둔다
-           - FICR 항의 2차 도함수는 부호가 바뀔 수 있으므로 절댓값을 취한 뒤 하한을 둔다
+           - 개체(늑대) 위치 = 하이퍼파라미터 벡터. alpha/beta/delta(상위 3개체)의 위치를
+             기준으로 나머지 개체가 이동하는 군집 지능 알고리즘
+           - a는 매 반복 2에서 0으로 선형 감소 (탐색→수렴 전환을 제어하는 유일한 스케줄 파라미터)
+           - objective_fn은 "클수록 좋음"(검증 총점)을 반환한다고 가정하고 내부에서 최대화한다
        """
-       def objective(y_true: np.ndarray, y_pred: np.ndarray):
-           e = y_pred - y_true
-           s = np.sign(e)
-           r = np.abs(e)
+       def __init__(self, bounds: list[tuple[float, float]], n_wolves: int = 5,
+                    max_iter: int = 4, seed: int = SEED):
+           self.bounds = np.asarray(bounds, dtype=np.float64)
+           self.n_wolves, self.max_iter = n_wolves, max_iter
+           self.rng = np.random.default_rng(seed)
 
-           g1 = 1.0 / (1.0 + np.exp(-k * (r - 0.06)))
-           g2 = 1.0 / (1.0 + np.exp(-k * (r - 0.08)))
-           # sigmoid(k(r-0.06)), sigmoid(k(r-0.08))
+       def _clip(self, pos: np.ndarray) -> np.ndarray:
+           return np.clip(pos, self.bounds[:, 0], self.bounds[:, 1])
 
-           d_ficr = s * (k * g1 * (1 - g1) + 3.0 * k * g2 * (1 - g2)) / 4.0
-           dd_ficr = (
-               k * k * g1 * (1 - g1) * (1 - 2 * g1)
-               + 3.0 * k * k * g2 * (1 - g2) * (1 - 2 * g2)
-           ) / 4.0
-           # loss_ficr = (g1 + 3*g2)/4 이므로 위 두 식은 pred에 대한 1·2차 도함수다
-           # (dr/dpred = s이고 s^2 = 1이므로 2차 도함수 연쇄법칙에서 s^2 항은 사라진다)
+       def optimize(self, objective_fn):
+           dim = len(self.bounds)
+           lo, hi = self.bounds[:, 0], self.bounds[:, 1]
+           positions = lo + self.rng.random((self.n_wolves, dim)) * (hi - lo)
+           # 탐색 범위 내 균등 무작위 초기화
 
-           grad = regression_weight * s + (1.0 - regression_weight) * d_ficr
-           hess = (1.0 - regression_weight) * np.abs(dd_ficr)
-           hess = np.maximum(hess, 1e-6)
-           # L1 항의 hess(0)는 이 하한에 흡수된다. FICR 항의 hess는 부호가 바뀔 수 있어 abs 처리
-           return grad, hess
-       return objective
+           scores = np.array([objective_fn(p) for p in positions])
+           history = [{"iter": 0, "best_score": float(scores.max())}]
+
+           for it in range(self.max_iter):
+               order = np.argsort(-scores)
+               # 검증 총점 내림차순: 상위 3개체(alpha/beta/delta)가 나머지를 이끈다
+               alpha, beta, delta = positions[order[0]], positions[order[1]], positions[order[2]]
+               a = 2.0 - 2.0 * it / max(1, self.max_iter - 1)
+               # a: 반복이 진행될수록 2->0으로 선형 감소, 탐색(exploration)에서 수렴(exploitation)으로 전환
+
+               for i in range(self.n_wolves):
+                   new_pos = np.zeros(dim)
+                   for leader in (alpha, beta, delta):
+                       r1, r2 = self.rng.random(dim), self.rng.random(dim)
+                       A = 2 * a * r1 - a
+                       C = 2 * r2
+                       D = np.abs(C * leader - positions[i])
+                       new_pos += leader - A * D
+                   positions[i] = self._clip(new_pos / 3.0)
+                   # alpha/beta/delta 각각이 이끄는 위치의 평균으로 이동 (표준 GWO 갱신식)
+
+               scores = np.array([objective_fn(p) for p in positions])
+               history.append({"iter": it + 1, "best_score": float(scores.max())})
+
+           best_idx = np.argmax(scores)
+           return positions[best_idx], float(scores[best_idx]), history
    ```
 
-2. **문자열 `lgb_models: dict[tuple[int, str], lgb.LGBMRegressor] = {}`가 있는 셀**(Step 2 루프)
-   에서 `model_selected = trainLightGBM(...)` 블록 다음에 세 번째 후보를 추가한다.
+2. 그룹별로 이미 `best_by_group`에 뽑힌 버전 1개만 재탐색한다(원안과 동일한 범위 제한 —
+   그룹1: `v1`, 그룹2: `v2`, 그룹3: `v1`). 탐색 공간은 `loss_k ∈ [10, 100]`,
+   `regression_weight ∈ [0.5, 0.95]` 2차원.
 
    ```python
-   model_ficr = lgb.LGBMRegressor(
-       **{**LGB_PARAMS, "objective": makeFicrObjective(k=40.0, regression_weight=0.7)}
-   )
-   model_ficr.fit(
-       X_train[columns], y_train / capacity_kw,
-       eval_X=X_valid[columns], eval_y=y_valid / capacity_kw,
-       eval_metric="l1",
-       callbacks=[lgb.early_stopping(80, verbose=False), lgb.log_evaluation(0)],
-   )
-   # 커스텀 목적함수는 objective에만 관여하고 조기종료 기준(l1)은 그대로 유지한다
-   lgb_models[(group, "LGBM_ficr")] = model_ficr
-   pred_ficr = predictKw(model_ficr, X_valid[columns], capacity_kw)[SEQ_LEN:]
-   summary_ficr = summarizeAll(pred_ficr, actual_aligned, group)
-   predictions_store[(group, "LGBM_ficr")] = (pred_ficr, actual_aligned)
-   records.append({
-       "group": group, "model_name": "LGBM_ficr", "n_features": len(columns),
-       "best_epoch": model_ficr.best_iteration_, **summary_ficr,
-   })
-   ```
-
-3. `regression_weight`를 0.5 / 0.7 / 0.9 세 값으로 각각 실행해 그룹별로 어느 값이 가장 높은
-   검증 총점을 내는지 비교한다(모델명은 `LGBM_ficr_w50`/`w70`/`w90`처럼 구분).
-   `improvement.md` 2-1이 지적한 함정(FICR 항만 쓰면 초기 포화로 학습이 멈춤)을 피하려면
-   `regression_weight`를 0.5 미만으로 내리지 않는다.
-
-### 검증 기준
-- `predictKw`가 여전히 `np.clip(..., 0.0, 1.0)`으로 이용률을 자르는지 확인한다(커스텀
-  목적함수를 써도 이 클리핑은 그대로 유지해야 한다).
-- 카드 A의 `summarizeErrorBand`를 `LGBM_ficr`에도 적용해 `">8%"` 비율이 `LGBM_selected`보다
-  줄었는지 확인한다. 총점이 같아도 밴드 분포가 개선됐다면 카드 F의 앙상블 후보로 유효하다.
-- 최종 채택은 검증 총점이 카드 0의 그룹별 기준선을 넘는지로 판단한다.
-
-### 예상 효과
-이 문서에서 근본적 개선 폭이 가장 큰 카드다. LGBM이 FICR을 직접 최적화하게 되므로,
-카드 B(보정)보다 큰 폭의 `>8%` 비율 감소를 기대할 수 있다.
-
----
-
-## 카드 D. [P1] LSTM `loss_k` / `regression_weight` 재탐색
-
-### 문제
-Step 3의 `MODEL_PARAMS`는 세 그룹·세 버전 모두에 같은 `loss_k=40.0`, `regression_weight=0.75`를
-쓴다. 그룹마다 오차 분포와 설비용량이 다른데(그룹1/2 21,600kW, 그룹3 21,000kW; FICR도
-0.38~0.46으로 그룹 간 편차가 큼) 하이퍼파라미터를 손으로 고른 1세트만 검증했다.
-
-### 구현 단계
-
-1. **문자열 `MODEL_PARAMS = {`가 있는 셀**을 카드 I(`baseline5_howto_next.md`)의 실행시간
-   경험(9모델 80epoch 풀 실행 ≈ 34분)을 고려해, **그룹별로 이미 `best_by_group`에 뽑힌 버전
-   1개만** 재탐색한다(9개 전부 다시 돌리지 않는다).
-   - 그룹1: `v1`(현재 최고 후보였던 `LGBM_selected`와 근접 경쟁하는 버전)
-   - 그룹2: `v2`
-   - 그룹3: `v1`
-
-2. 그리드: `regression_weight ∈ {0.6, 0.75, 0.9}` × `loss_k ∈ {20.0, 40.0, 80.0}` = 9조합 ×
-   그룹 3개 = 27회 학습(각 회는 최대 80epoch, patience 12로 조기종료). 기존 `MODEL_PARAMS`를
-   덮어쓰지 말고 지역 변수로 복사해 그리드 값만 바꾼다.
-
-   ```python
-   lstm_grid_rows = []
    grid_targets = {1: "v1", 2: "v2", 3: "v1"}
-   # 카드 0의 best_by_group에서 그룹별로 이미 선택된 버전만 재탐색한다
+   gwo_rows = []
+
    for group, version in grid_targets.items():
        data = datasets[group]
        columns = selected_features[group]
-       X_train = data["X_train"][columns]
-       X_valid = data["X_valid"][columns]
+       X_train, X_valid = data["X_train"][columns], data["X_valid"][columns]
        y_train, y_valid = data["y_train"], data["y_valid"]
        variant = AllFeaturesVariant(random_state=SEED)
        train_frame = variant.fit_transform(X_train, y_train)
@@ -376,324 +536,338 @@ Step 3의 `MODEL_PARAMS`는 세 그룹·세 버전 모두에 같은 `loss_k=40.0
        X_train_scaled, X_valid_scaled = scaler.transform(train_frame), scaler.transform(valid_frame)
        monitor = OfficialScoreMonitor(metrics, group)
 
-       for regression_weight in (0.6, 0.75, 0.9):
-           for loss_k in (20.0, 40.0, 80.0):
-               params = {**MODEL_PARAMS, "regression_weight": regression_weight, "loss_k": loss_k}
-               pipeline = make_lstm_pipeline(
-                   version, capacity_kw=RATED_CAPACITY_KW[group], seq_len=SEQ_LEN, **params
-               )
-               pipeline.fit(
-                   X_train_scaled, y_train, X_val=X_valid_scaled, y_val=y_valid,
-                   metrics=monitor, group=group,
-               )
-               pred = pipeline.predict(X_valid_scaled, y_valid)
-               actual = y_valid[SEQ_LEN:]
-               summary = summarizeAll(pred, actual, group)
-               lstm_grid_rows.append({
-                   "group": group, "version": version,
-                   "regression_weight": regression_weight, "loss_k": loss_k,
-                   "best_epoch": pipeline.best_epoch, **summary,
-               })
-               # 27회 전체가 baseline5_howto_next.md 카드 I 실측 기준으로 그룹당 약 3~4분 내 끝나야 한다
+       def objective_fn(params, group=group, version=version):
+           loss_k, regression_weight = float(params[0]), float(params[1])
+           pipeline = make_lstm_pipeline(
+               version, capacity_kw=RATED_CAPACITY_KW[group], seq_len=SEQ_LEN,
+               **{**MODEL_PARAMS, "loss_k": loss_k, "regression_weight": regression_weight},
+           )
+           pipeline.fit(X_train_scaled, y_train, X_val=X_valid_scaled, y_val=y_valid,
+                        metrics=monitor, group=group)
+           pred = pipeline.predict(X_valid_scaled, y_valid)
+           actual = y_valid[SEQ_LEN:]
+           return metrics.summarize(pred, actual, group)["score"]
 
-   lstm_grid_df = pd.DataFrame(lstm_grid_rows).sort_values(
-       ["group", "score"], ascending=[True, False]
-   )
-   display(lstm_grid_df.groupby("group").head(3))
-   # 그룹별 상위 3개 조합만 우선 확인한다
+       gwo = GreyWolfOptimizer(bounds=[(10.0, 100.0), (0.5, 0.95)], n_wolves=5, max_iter=4, seed=SEED)
+       best_params, best_score, history = gwo.optimize(objective_fn)
+       gwo_rows.append({
+           "group": group, "version": version,
+           "loss_k": best_params[0], "regression_weight": best_params[1],
+           "best_score": best_score, "n_evals": len(history) * 5,
+       })
+       # n_evals: 개체 수 x (반복 수 + 초기화 1회)만큼 objective_fn이 호출된 횟수 — 실행시간 추정용
+
+   gwo_df = pd.DataFrame(gwo_rows)
+   display(gwo_df)
    ```
 
-### 검증 기준
-- 그룹별 그리드 실행이 **15분 이내**에 끝나야 한다(카드 I의 8스레드/배치256 실측 기준
-  27회 ≈ 9~12분 예상). 크게 넘으면 그리드를 6조합으로 줄인다.
-- 그룹별 최고 조합의 검증 총점이 카드 0의 기준선(그룹2 0.6877, 그룹3 0.6583)을 넘는지 확인한다.
-- `best_epoch`이 대부분 80에 붙어 있으면 조기종료가 걸리지 않은 것이므로, 그 조합은
-  `epochs`를 늘려 한 번 더 확인할 가치가 있다고 보고한다.
+3. **LGBM `k`/`regression_weight`도 동일한 GWO 루프로 탐색**(카드 C의 `trainFicrLightGBM` 호출을
+   `objective_fn`으로 감싸기만 하면 된다). LightGBM은 LSTM보다 학습이 훨씬 빠르므로
+   `n_wolves=8, max_iter=6`으로 예산을 더 크게 잡을 수 있다.
 
-### 예상 효과
-카드 C만큼 근본적이지는 않지만, 이미 FICR 손실을 쓰고 있는 LSTM에서 "공짜로" 얻을 수 있는
-개선이다. 그룹2(`v2`, FICR 0.4613)처럼 이미 좋은 조합은 큰 변화가 없을 수 있고,
-그룹1/3처럼 FICR이 낮은 쪽에서 개선 여지가 클 것으로 예상한다.
+**[데이터 누수 방지책]** `objective_fn`은 검증 구간(`X_valid`/`y_valid`) 총점만 반환한다 —
+평가(2025년) 구간은 어떤 형태로도 GWO 탐색에 노출되지 않는다. GWO의 무작위 초기화·개체 이동은
+`SEED`로 고정해 재현성을 보장한다.
+
+**[검증 가설 및 KPI]**
+- 그룹별 GWO 실행이 예상 시간(§1-2 표, 대략 20~27분/3그룹) 이내에 끝나야 한다. **실측 후 1회
+  반복 소요 시간을 확인하고, 예상 총 소요가 20분을 넘으면 즉시 `n_wolves=4, max_iter=3`으로
+  축소한다**(`baseline7_idea_evaluation.md` 6-3절 축소 규칙).
+- 그룹별 `best_score`가 기존 그리드 탐색 결과(카드 D 원안, 9격자)의 최고값 이상인지 비교한다
+  — 낮으면 GWO가 그리드보다 나쁜 지역해에 수렴한 것이므로 초기화를 다르게 하여 재시도하거나
+  FA(Firefly Algorithm)로 대체한다(§4 리스크 관리).
+- `history`의 `best_score`가 반복이 진행될수록 비감소(non-decreasing)인지 확인한다(엘리트
+  보존이 없는 표준 GWO는 이론상 감소할 수 있으므로, 감소가 관측되면 `positions[best_idx]`
+  대신 `history` 전체에서 최댓값을 채택하도록 보정한다).
 
 ---
 
-## 카드 E. [P2] `lead_hour` 기반 오차 진단 (보조)
+### 카드 E. [P2] 시각대(diurnal) 오차 진단 매트릭스
 
-### 배경
-`data_description.md` 기준 실제 운영은 전날 13시 예보로 다음날 24시간을 일괄 예측하는
-day-ahead 구조이고, `lead_hour`/`gfs_lead_hour`는 이미 원시 피처로 학습에 들어가 있다
-(`WindforceDatasetBuilder.featureCols`가 제외하지 않음). 하지만 리드타임이 길수록 예보
-오차가 커진다는 가정을 실제로 확인한 적이 없다.
+**[목적]** `lead_hour`는 이 데이터셋에서 시각(hour-of-day)의 결정론적 아핀 변환과 동일한
+정보이고(`baseline7_idea_evaluation.md` 2-1절, 상관계수 1.0 실측), 이미 SHAP 선별을 통과해
+두 모델 계열 모두의 학습 입력에 들어가 있다(2-2절). 따라서 이 카드의 실제 작업은 "모델에
+새 정보를 주는 것"이 아니라 **시간별 오차율의 밴드 분포가 시각대별로 실제로 불균일한지
+진단**하고, 불균일할 때만 카드 B/C를 시각대 차원으로 확장하는 것이다.
 
-### 구현 단계
+**[기술적 세부 사양]**
 
-1. 카드 A의 `predictions_store`와 `datasets[group]["df"]`(또는 `X_valid`)의 `lead_hour` 컬럼을
+1. `predictions_store`와 각 그룹 `X_valid`(또는 `datasets[group]["df"]`)의 `target_hour_ldaps`를
    시간 인덱스로 정렬해 이어붙인다.
-2. `pd.cut(lead_hour, bins=[0, 19, 27, 35], labels=["단기(≤19h)", "중기(20~27h)", "장기(28~35h)"])`로
-   구간을 나누고, 구간별로 카드 A의 `summarizeErrorBand`를 다시 계산한다.
-3. 장기 구간의 `>8%` 비율이 단기 구간보다 뚜렷이 크면(예: 1.5배 이상), 카드 B의
-   `FicrCalibrator`를 리드타임 구간별로 따로 적합하는 확장을 카드 F 착수 전에 검토한다.
-   뚜렷하지 않으면 이 카드는 여기서 종료하고 보고만 한다 — 억지로 구간별 모델을 분리하지 않는다.
-
-### 검증 기준
-- 구간별 `>8%` 비율 표를 실행 로그에 남긴다. 추가 구현 여부는 이 표의 결과로 판단한다.
-
----
-
-## 카드 F. [P2] 그룹별 최종 후보 채택 + 제출 반영
-
-### 구현 단계
-
-1. 카드 A~D에서 나온 모든 후보(원본 `LGBM_selected`/`LSTM_*`, 카드 B 보정 적용본, 카드 C
-   `LGBM_ficr_*`, 카드 D 재탐색 LSTM)를 그룹별로 검증 총점 내림차순 정렬한다.
-2. 앙상블(가중 블렌딩)은 **후보가 이미 2개 이상 카드 0 기준선을 넘었을 때만** 시도한다.
-   가중치는 단순 격자탐색으로 충분하다.
+2. 3구간(단기 `01~08시`, 중기 `09~16시`, 장기 `17~24시`)으로 나누고, 구간별로 카드 A의
+   `summarizeErrorBand`를 재계산한다. (그룹 × best_by_group 모델 1개 × 3시각대 = 9행이면 충분)
 
    ```python
+   hour_bins = pd.cut(
+       target_hour, bins=[0, 8, 16, 24],
+       labels=["단기(01~08시)", "중기(09~16시)", "장기(17~24시)"],
+   )
+   diurnal_rows = []
+   for bucket in hour_bins.cat.categories:
+       mask = hour_bins == bucket
+       share = summarizeErrorBand(pred[mask], actual[mask], group)
+       diurnal_rows.append({"group": group, "hour_bucket": bucket, **share.to_dict()})
+   diurnal_df = pd.DataFrame(diurnal_rows)
+   display(diurnal_df)
+   ```
+
+3. **불균일 판정**: 어떤 시각대의 `>8%` 비율이 다른 시각대 평균보다 **1.5배 이상** 크면
+   "불균일"로 판정한다.
+   - 불균일이면: 카드 B의 `DiurnalFicrCalibrator`(시각대별 (a,b))와 카드 C의 `sample_weight`
+     가중(`>8%` 비율이 높은 시각대 행에 1.2~1.5배 가중) 두 가지를 각각 시도해 더 큰 개선을
+     보인 쪽만 채택한다.
+   - 불균일이 아니면: 카드 E는 진단 단계에서 종료하고 완전 분리 모델은 시도하지 않는다
+     (`baseline7_idea_evaluation.md` 2-4절 ROI 표 — 데이터 손실 대비 효용이 낮다는 결론을
+     그대로 따른다).
+
+**[데이터 누수 방지책]** 시각대 구간 경계(`01~08/09~16/17~24`)는 고정 상수이며 데이터로부터
+학습되지 않는다. 시각대별 보정·가중 탐색은 카드 B/C와 동일하게 검증 구간에서만 수행한다.
+
+**[검증 가설 및 KPI]**
+- `diurnal_df`의 시각대별 `>8%` 비율과 (최대/평균) 비율을 실행 로그에 남긴다.
+- 두 저비용 방법(시각대별 보정, 시각대별 가중) 모두 기준선을 넘지 못하면 카드 E는 여기서
+  종료하고 완전 분리 모델을 시도하지 않는다.
+- 완전 분리 모델까지 고려하는 경우(불균일이 2배 이상이고 두 저비용 방법 모두 목표 미달일
+  때만, 마지막 수단), 그룹3처럼 학습 데이터가 이미 적은 그룹(2023~2024만 2년치)은 시각대
+  분리 후 표본 수가 과적합 위험 수준(연 단위 데이터 2년 × 1/3 시각대 ≈ 5,800시간)인지 먼저
+  확인한다.
+
+---
+
+### 카드 F. [P2] 시각대별 앙상블 + 그룹별 최종 후보 채택 + 제출 반영
+
+**[목적]** 카드 A~E에서 나온 모든 후보 — 원본(`LGBM_selected`/`LSTM_*`), 카드 B 보정 적용본
+(전역·시각대별), 카드 C `LGBM_ficr`, 카드 D로 재탐색한 LSTM/LGBM — 를 그룹별로 비교해 최종
+제출 모델을 확정한다.
+
+**[기술적 세부 사양]**
+
+1. 카드 A~E의 모든 후보를 그룹별로 검증 총점 내림차순 정렬한다.
+2. **앙상블(가중 블렌딩)은 후보가 이미 2개 이상 기준선을 넘었을 때만 시도한다.** 가중치는
+   단순 격자탐색으로 충분하다.
+
+   ```python
+   ensemble_rows = []
    for w in np.arange(0.0, 1.01, 0.05):
        blended = w * pred_a + (1 - w) * pred_b
        # pred_a, pred_b는 같은 그룹의 서로 다른 두 후보(검증 구간, predictions_store에서 조회)
        score = metrics.summarize(blended, actual, group)["score"]
+       ensemble_rows.append({"group": group, "w": w, "score": score})
+   ensemble_df = pd.DataFrame(ensemble_rows).sort_values("score", ascending=False)
    ```
 
    가중치는 검증 예측에서만 탐색하고, 앙상블 총점이 **두 후보 각각보다 낮으면 채택하지 않는다.**
-3. 그룹별 최종 채택 모델·보정 파라미터를 **문자열 `def fitFinalLightGBM(`가 있는 셀**(Step 5)의
-   해당 그룹 분기에 반영한다.
-   - `LGBM_ficr`가 채택되면: `fitFinalLightGBM` 호출 시 `LGB_PARAMS` 대신
-     `{**LGB_PARAMS, "objective": makeFicrObjective(...)}`를 쓰도록 그 그룹 분기만 수정한다.
+   카드 E에서 시각대 불균일이 확인된 그룹은, 전역 가중치 하나 대신 시각대별로 다른 `w`를
+   탐색하는 것도 고려할 수 있다(표본이 충분한 경우에 한함).
+3. 그룹별 최종 채택 모델·보정 파라미터를 Step 5(`def fitFinalLightGBM(`가 있는 셀)의 해당
+   그룹 분기에 반영한다.
+   - `LGBM_ficr`가 채택되면: `fitFinalLightGBM` 호출 시 `trainFicrLightGBM`(카드 D가 찾은 최적
+     `k`/`regression_weight` 사용)으로 그 그룹 분기만 교체한다.
    - 카드 B 보정이 채택되면: `pred = predictKw(...)` 또는 `pred = final_model.predict(...)`
-     직후에 `pred = calibrator.transform(pred)`를 한 줄 추가한다. `calibrator`는 검증 구간에서
-     이미 적합한 `(a, b)`를 그대로 재사용하고, 평가 구간에서 다시 `fit()`하지 않는다.
+     직후에 `pred = calibrator.transform(pred)`(또는 시각대별이면
+     `calibrator.transform(pred, hour_bucket)`)를 추가한다. 검증 구간에서 이미 적합한 파라미터를
+     그대로 재사용하고, 평가 구간에서 다시 `fit()`하지 않는다.
    - 앙상블이 채택되면: 두 최종 모델을 각각 전체 재학습해 `pred = w*pred_a + (1-w)*pred_b`로
      합친다. `w`는 검증 구간에서 찾은 값을 고정 상수로 쓴다.
 
-### 검증 기준
-- 기존 Step 5 검증 로직(`len(pred) != len(test_df)` 에러, 스키마·결측·물리범위·첫 24시간
-  검증 셀)을 그대로 통과해야 한다. 새 로직을 추가했다고 이 가드들을 느슨하게 풀지 않는다.
+**[데이터 누수 방지책]** 기존 Step 5 검증 로직(`len(pred) != len(test_df)` 에러, 스키마·결측·
+물리범위·첫 24시간 검증 셀)을 그대로 통과해야 한다. 새 로직을 추가했다고 이 가드들을 느슨하게
+풀지 않는다.
+
+**[검증 가설 및 KPI]**
 - 최종 `submission_baseline7.csv` 재생성 후, 그룹별 값이 0이 아니고 설비용량 이하인지
   마지막 검증 셀로 재확인한다.
+- 3그룹 평균 검증 총점을 §1-2의 Phase 3 목표(0.68 잠정치)와 비교해 보고한다.
 
 ---
 
-## 작업 순서 요약
+### 카드 G. [P3] VMD 입력 피처 분해 + mRMR 기반 IMF 특징 선택 (선택적 탐색 스파이크)
 
-```
-카드 A (오차율 밴드 진단 + 예측값 저장소)   ← 다른 모든 카드의 전제. 가장 먼저.
-      ↓
-카드 B (사후 보정)   ← 비용이 가장 낮다. 다음.
-      ↓
-카드 C (LightGBM FICR 커스텀 목적함수)   ← 개선 폭이 가장 클 것으로 예상
-      ↓
-카드 D (LSTM loss_k/regression_weight 재탐색)   ← C와 독립적으로 병행 가능
-      ↓
-카드 E (lead_hour 진단, 보조)   ← 결과에 따라 선택적으로만 확장
-      ↓
-카드 F (그룹별 최종 채택 + 제출 반영)   ← 커밋 직전 마지막 단계
-```
+**[목적]** `ws10`(LDAPS IDW 대표 풍속)·`gfs_ws_hub`(GFS 허브높이 외삽 풍속)를 VMD로 K개
+모드로 분해해 추세·고주파 성분을 파생 피처로 추가하고, 상관된 모드 다발이 기존 SHAP 선별
+(`FeatureSelector`)에서 "집단 탈락"하는 것을 막기 위해 **mRMR로 사전 축소**한 뒤 기존
+`LGBM_selected` 파이프라인에 편입한다. 새 모델 계열을 만드는 것이 아니라 **기존 파이프라인에
+피처를 더했을 때의 순수 효과**를 측정하는 것이 목적이다(`baseline7_idea_evaluation.md`
+아이디어 1, 5).
 
-## 공통 준수 사항
+**[기술적 세부 사양 — 절대 하지 말 것]**
+- 타깃(발전량) 시계열을 VMD로 분해해 모드별로 자기회귀 예측하지 않는다 — day-ahead 일괄
+  제출 구조상 제출 불가능하다(`Persistence_oracle_lag1`과 동일한 결함).
+- 학습 구간 + 검증 구간을 합쳐 **한 번에** VMD를 돌리지 않는다 — 검증 구간의 스펙트럼 정보가
+  학습 구간 모드 값에 섞여 들어가는 누수다.
+
+**[기술적 세부 사양 — 절차]**
+
+1. **분해 대상**: 그룹별 `ws10`, `gfs_ws_hub` 두 컬럼만(전체 피처를 다 분해하지 않는다).
+2. **VMD 누수 차단**: 학습 구간(80%)만으로 적합한 VMD 결과를 학습 피처로 쓰고, 검증·평가
+   구간은 확장 윈도우(주 단위 재적합)를 쓴다. 재적합 윈도우의 가장 최근(오른쪽 끝) 지점은
+   경계 왜곡이 가장 크다는 것을 알고 진행한다(완화 불가능한 구조적 한계).
+3. **파라미터**: `K ∈ {4,6,8}`, `α ∈ {1000,2000}` 6조합. `vmdpy` 사용(순수 numpy/scipy 기반).
+   **재구성 오차가 아니라 검증 총점**으로 조합을 고른다.
+4. **mRMR 특징 선택 (신규)** — VMD가 만든 최대 16개(`vmd_ws10_mode1..K`,
+   `vmd_gfs_ws_hub_mode1..K`) 신규 컬럼을 기존 SHAP 선별에 바로 태우지 않고, 먼저 학습 구간
+   에서만 mRMR로 축소한다.
+
+   ```python
+   from sklearn.feature_selection import mutual_info_regression
+
+   def selectImfFeaturesMrmr(imf_df: pd.DataFrame, y_train: np.ndarray,
+                              top_k: int = 6, seed: int = SEED) -> list[str]:
+       """VMD의 IMF(시계열을 나눈 한 조각)를 mRMR(관련성은 높고 중복은 낮게)로 고르는 함수
+
+       Args:
+           - imf_df: 학습 구간의 IMF 컬럼만 담은 DataFrame(vmd_ws10_mode1..K 등)
+           - y_train: 학습 구간 타깃(발전량 kWh 또는 이용률)
+           - top_k: 최종적으로 남길 IMF 개수
+
+       Logic:
+           - relevance: mutual_info_regression(imf, y_train) — 비선형 관계도 포착
+           - redundancy: 이미 선택된 IMF들과의 평균 절대 상관계수
+           - 매 스텝 (relevance - redundancy)가 최대인 컬럼을 그리디하게 추가
+           - 반드시 학습 구간(imf_df, y_train)에서만 계산한다. 선택된 컬럼 이름 집합은
+             검증·평가 구간에도 고정 적용하고, 재적합 윈도우가 바뀌어도 다시 뽑지 않는다
+             (baseline7_idea_evaluation.md 5-3절 누수 방지 규칙)
+       """
+       relevance = pd.Series(
+           mutual_info_regression(imf_df, y_train, random_state=seed),
+           index=imf_df.columns,
+       )
+       selected: list[str] = [relevance.idxmax()]
+       remaining = [c for c in imf_df.columns if c not in selected]
+
+       while len(selected) < min(top_k, len(imf_df.columns)) and remaining:
+           redundancy = {
+               c: imf_df[selected].corrwith(imf_df[c]).abs().mean() for c in remaining
+           }
+           mrmr_score = {c: relevance[c] - redundancy[c] for c in remaining}
+           best = max(mrmr_score, key=mrmr_score.get)
+           selected.append(best)
+           remaining.remove(best)
+       return selected
+       # 선택된 IMF 컬럼명 리스트. 이후 datasets[group]["df"]에 이 컬럼만 병합한다
+   ```
+
+   `mutual_info_regression` 결과가 비정상적으로 균일하면(예: 모든 IMF 관련성 점수가 거의
+   동일) PCC-GRA로 대체한다(§4 리스크 관리).
+5. **모델 통합**: mRMR로 축소한 IMF 컬럼만 `datasets[group]["df"]`에 병합한 뒤, Step 2
+   (`LGBM_full`/`LGBM_selected` 학습 셀)를 그대로 재실행해 기존 SHAP 선별 대상에 자연스럽게
+   포함시킨다. 별도의 "VMD 전용 모델"을 새로 만들지 않는다.
+
+**[데이터 누수 방지책]**
+- VMD: 학습 구간(80%)에서만 최초 적합, 검증·평가 구간은 주 단위 확장 윈도우 재적합(매
+  시각마다 재적합하지 않는다).
+- mRMR: relevance·redundancy 계산 모두 학습 구간 `imf_df`/`y_train`에서만 수행하고, 선택된
+  컬럼 이름 집합을 검증·평가 구간에 고정 적용한다(구간마다 다시 뽑지 않는다).
+- `coding_convention.md` 7-3절(피처 선정 시 식별자·타깃 제외)과 동일한 원칙을 적용한다.
+
+**[검증 가설 및 KPI]**
+- **1차 게이트**: 그룹1 `LGBM_selected` 검증 총점이 VMD+mRMR 피처 추가 전(0.6555) 대비
+  **+0.005 이상** 개선되는지. 이 문턱을 넘지 못하면 이후 카드(그룹 2·3 확장, LSTM 통합)를
+  진행하지 않는다.
+- **2차 확인**: 카드 A의 `summarizeErrorBand`를 VMD+mRMR 피처 포함/미포함 두 모델에 각각
+  적용해 `>8%` 비율이 실제로 줄었는지 확인한다(총점 개선이 NMAE 쪽에서만 온 것이 아닌지 분리).
+- **경계 왜곡 진단**: 각 재적합 윈도우의 마지막 24시간과 그 이전 구간의 모드 값 분산을
+  비교해, 마지막 24시간이 비정상적으로 크면(예: 2배 이상) 그 구간의 VMD 피처를 결측 처리하고
+  원본 풍속 피처로 폴백하는 로직이 필요하다는 신호로 기록한다.
+- **mRMR 축소 확인**: `selectImfFeaturesMrmr`가 반환한 컬럼이 최종 SHAP 선별(`FeatureSelector`)
+  에서 몇 개나 살아남는지 보고한다 — 0개면 mRMR 축소가 무의미했다는 뜻이므로 `top_k`를
+  늘리거나 PCC-GRA로 재시도한다.
+- 그룹1에서 유의미한 개선이 없으면 **그룹 2·3으로 확장하지 않고 종료**한다.
+
+---
+
+## 3. 구현 위치와 흐름
+
+기존 전처리와 Step 2~5의 뼈대는 유지한다. 신규 코드는 `baseline_7.ipynb`의 셀로만 추가한다.
+실행 흐름은 `A(예측 저장·진단) → B(저비용 보정) 또는 C(재학습) → D(필요 시 HPO) →
+E(시각대 진단) → F(최종 채택·제출)`이다. 카드 G는 선택한 경우에만 Step 2 전에 VMD·mRMR 피처를
+추가한다.
+
+---
+
+## 4. 리스크 관리 및 Fallback 전략
+
+| 리스크 | 영향 카드 | 감지 신호 | 대응(Fallback) |
+|---|---|---|---|
+| VMD 연산 지연(재적합 비용이 예산 초과) | G | 주 단위 재적합 전체 소요가 카드 I 실행시간 예산(≈34분)을 크게 초과 | 재적합 주기를 월 단위로 낮춘다. 그래도 초과하면 카드 G를 P3에서 보류(deprioritize)하고 카드 A~F만 우선 완료 |
+| `vmdpy` 설치 실패(환경 제약) | G | `pip install vmdpy` 실패 | PyEMD의 CEEMDAN 등 대체 라이브러리로 1회 대체 시도, 그래도 실패하면 카드 G 전체를 보류하고 보고 |
+| VMD 경계 왜곡이 완화되지 않음(구조적 한계) | G | 재적합 윈도우 마지막 24시간의 모드 분산이 그 이전 구간 대비 2배 이상 | 최근 24시간 VMD 피처를 결측 처리 → 원본 풍속 피처로 자동 폴백하는 가드를 병합 셀에 넣는다 |
+| mRMR 결과가 비정상적으로 균일(상호정보량 추정 불안정) | G | `selectImfFeaturesMrmr`의 relevance 값들이 서로 거의 구분되지 않음(표준편차가 평균의 5% 미만 등) | PCC-GRA(Pearson 상관 + Grey Relational Analysis)로 대체 계산(`baseline7_idea_evaluation.md` 아이디어 5-2) |
+| 커스텀 `hess`가 문턱 근처 표본에서 급변해 리프 가중치 발산(수렴 실패) | C | 학습 로그에서 검증 `l1` 손실이 발산하거나 진동, `model_ficr`의 `best_iteration_`이 비정상적으로 작음 | (1) `min_sum_hessian_in_leaf`를 0.05→0.1로 상향 (2) `hess` 상대 하한을 1e-2→5e-2로 상향 (3) 그래도 불안정하면 2단계 웜업 라운드 수를 200→400으로 늘려 1단계에서 더 안정된 초기 모델을 확보 |
+| GWO가 그리드 탐색보다 나쁜 지역해에 수렴 | D | `gwo_df`의 `best_score`가 카드 D 원안(그리드 9격자)의 최고값보다 낮음 | (1) `n_wolves`를 늘려 다른 시드로 재시도 (2) Firefly Algorithm(FA)으로 대체 — 광 흡수계수 `γ`, 매력도 `β₀`는 문헌 기본값(`γ=1.0`, `β₀=1.0`)에서 시작 (3) 그래도 실패하면 카드 D 원안(그리드 9격자)으로 폴백 — 이미 전체 문서에 구현되어 있으므로 즉시 전환 가능 |
+| GWO/HPO 탐색이 실행시간 예산(20분) 초과 | D | 1회 반복 실측 시간 × `max_iter` × 그룹 수가 20분을 넘을 것으로 예상 | `n_wolves=5→4`, `max_iter=4→3`으로 축소(그룹당 20회→12회 평가). 그래도 초과하면 그룹당 재탐색을 1개 버전에서 가장 시급한(카드 A `recommendAction`이 "카드 C 우선"인) 그룹으로만 한정 |
+| 사후 보정(카드 B) 시각대 확장 시 특정 시각대 표본 부족 → 과적합 | B/E | `DiurnalFicrCalibrator`의 특정 구간 표본 수가 500시간 미만 | `A_GRID`/`B_RATIO_GRID`의 격자 수를 21×21→11×11로 줄이거나, 인접 시각대와 통합해 2구간으로 낮춘다 |
+| 앙상블(카드 F) 채택 후 총점이 개별 후보보다 낮음 | F | `ensemble_df`의 최고 `score`가 두 후보 각각의 단독 검증 총점보다 낮음 | 즉시 폐기하고 더 높은 단독 후보를 채택한다(앙상블은 항상 선택적 시도이지 필수 단계가 아니다) |
+| 신규 의존성(`optuna`, `vmdpy` 등) 설치가 필요한데 자동 설치가 부적절 | D, G | `.venv`에 해당 패키지가 없음을 사전 확인(§본 문서 작성 시점 실측: 없음) | **사용자에게 설치 여부를 먼저 확인한다.** 이 저장소는 신규 의존성을 자동으로 추가하지 않는 것이 원칙이며, GWO(카드 D)·`vmdpy`(카드 G, 이미 별도 fallback 있음) 모두 최소 의존성 경로가 이미 마련되어 있으므로 대부분의 경우 설치 자체가 불필요하다 |
+
+---
+
+## 5. 실행 순서와 중단 기준
+
+| 순서 | 할 일 | 다음 단계로 가는 조건 | 남기는 결과 |
+|---|---|---|---|
+| P0 | 카드 A: 예측 저장·오차 밴드 진단 | `band_df`와 권고 조치 확인 | `predictions_store`, `band_df` |
+| P1 | 카드 B 전역 보정 → 카드 C FICR 목적함수 → 필요 시 카드 D HPO | 그룹별 총점이 기존 기준선보다 높은 후보만 유지 | `calibration_df`, `LGBM_ficr`, `gwo_df` |
+| P2 | 카드 E 시각대 진단 → 카드 F 최종 후보·앙상블·제출 | 불균일할 때만 B/C 시각대 확장; 최종 평균이 0.6672보다 높아야 함 | `diurnal_df`, `ensemble_df`, `submission_baseline7.csv` |
+| P3 (선택) | 카드 G VMD+mRMR 피처 실험 | 그룹1 총점이 기준선보다 `+0.005` 이상일 때만 그룹 2·3으로 확장 | 게이트 통과 여부와 비교 결과 |
+
+카드 B는 비용이 낮아 먼저 시도한다. 카드 D와 G는 시간이 많이 들 수 있으므로 앞 단계의 총점
+개선이 확인된 경우에만 진행한다. 어떤 카드든 기준선을 넘지 못하면 그 카드에서 멈추고 기존
+`best_by_group` 후보를 유지한다.
+
+---
+
+## 부록 A. 코드 앵커 문자열 목록
+
+노트북 편집 시 셀을 찾는 데 쓰는 고유 문자열과, 그 문자열이 속한 로직 단위를 정리한다.
+(노트북 실행 시 셀 인덱스가 바뀌므로 인덱스가 아니라 이 문자열로 셀을 찾는다.)
+
+| 앵커 문자열 | 위치(로직 단위) | 관련 카드 |
+|---|---|---|
+| `"lgb_models: dict[tuple[int, str], lgb.LGBMRegressor] = {}"` | Step 2 LightGBM 학습 루프 시작 | A, C |
+| `"LGB_PARAMS = {"` | LightGBM 공통 하이퍼파라미터 정의 | C |
+| `"class FeatureSelector:"` | null importance + 상관 중복 기반 SHAP 선별 | G |
+| `"MODEL_PARAMS = {"` | Step 3 LSTM 학습 루프 시작 | A, D |
+| `"class OfficialScoreMonitor:"` | LSTM 조기종료 기준(공식 총점) | D |
+| `"def aggregateOfficialScore(result_df: pd.DataFrame) -> pd.DataFrame:"` | Step 4 집계 | A |
+| `"best_by_group = ("` | 그룹별 검증 총점 최고 모델 선택 | A, F |
+| `"def fitFinalLightGBM("` | Step 5 최종 재학습·제출 생성 | C, F |
+
+## 부록 B. 공통 준수 사항
 
 - 코드 스타일: [`MD/coding_convention.md`](coding_convention.md) — 설명 주석은 코드 줄 아래,
   단위 명시, `df.copy()` 선행, 시간순 분할.
 - 새 실험 결과는 `baseline_7_results.csv`와 같은 스키마
   (`group, model_name, n_features, best_epoch, nmae, ficr, score, mae, rmse`)로 추가 저장해
   `aggregateOfficialScore`로 재집계 가능하게 한다.
-- **모든 보정·앙상블 가중치 탐색은 검증 구간(뒤 20%)에서만 한다.** 평가(2025년) 구간에는
+- **모든 보정·앙상블·HPO 탐색은 검증 구간(뒤 20%)에서만 한다.** 평가(2025년) 구간에는
   검증에서 고정한 파라미터를 그대로 적용만 한다.
-- **채택 기준은 카드 0의 그룹별 기준선**(그룹1 0.6555 / 그룹2 0.6877 / 그룹3 0.6583)이다.
-  이를 넘지 못하면 그 그룹은 기존 `best_by_group` 선택을 유지한다.
+- **채택 기준은 §1-1의 그룹별 기준선**(그룹1 0.6555 / 그룹2 0.6877 / 그룹3 0.6583)이다. 이를
+  넘지 못하면 그 그룹은 기존 `best_by_group` 선택을 유지한다.
 - `Persistence_oracle_lag1`은 비교 기준으로만 쓴다. 직전 실제값을 쓰므로 2025년 제출에는
   사용할 수 없다.
+- 신규 의존성(`vmdpy` 등)이 필요한 카드는 설치 전 사용자에게 확인한다 — 이 저장소는 자동
+  `pip install`을 원칙으로 하지 않는다.
 
----
----
+## 부록 C. 초심자용 주석 용어 정의
 
-# 추가 지시 (2026-08-12, 2차) — VMD 분해 · 시각대 차등 모델링 검토 반영
+노트북 주석이나 독스트링에서 아래 용어가 처음 나올 때 괄호 안의 짧은 설명을 함께 쓴다.
 
-> 근거 문서: [`MD/baseline7_workspace_summary.md`](baseline7_workspace_summary.md)(워크스페이스·데이터 구조 재확인),
-> [`MD/baseline7_idea_evaluation.md`](baseline7_idea_evaluation.md)(두 아이디어 심층 검증 전문).
-> 이 문서는 그 검증 결과를 실행 카드로 옮긴 것이다. **판정 요약만 필요하면 각 카드의 "판정" 줄만 읽는다.**
-
-## Background & Objective
-
-두 아이디어 모두 "FICR이 여전히 Persistence 대비 크게 낮다"(카드 0, 격차의 86%가 FICR)는
-같은 문제의식에서 출발했다. 그러나 심층 검증 결과, 둘 다 **제안된 원형 그대로는 적용할 수
-없거나 한계효용이 낮다는 구조적 근거**가 있었다(`baseline7_idea_evaluation.md` 참조):
-
-- **VMD**: 이 대회는 평가 구간 실제값을 어떤 형태로도 쓸 수 없는 day-ahead 일괄 제출
-  구조라(`data_description.md` 12절), 문헌의 표준적인 "타깃 분해 + 모드별 자기회귀 예측"
-  구조는 `Persistence_oracle_lag1`과 같은 이유로 제출 불가능하다. **입력(NWP 예보) 신호
-  분해로 범위를 좁혀야만** 시도할 수 있다.
-- **리드타임 차등**: 이 데이터셋은 하루 1회(13:00)만 예보를 발행하므로 `lead_hour`가
-  대상 시각(hour-of-day)의 결정론적 아핀 변환과 정확히 같다(캐시 데이터로 상관계수 1.0
-  실측). 또한 이 원시 정보(`lead_hour`/`target_hour_*`/`hour_sin/cos_*`)는 **이미 SHAP
-  선별을 통과해 `LGBM_selected`·`LSTM_v1/v2/v3` 전부의 학습 입력에 들어가 있다.** "리드타임
-  열화"라는 인과 프레이밍은 이 데이터로 검증 불가능하며, "완전 분리 모델"은 이미 트리 모델이
-  암묵적으로 할 수 있는 일을 데이터 손실(그룹당 1/3)을 감수하며 다시 구조로 강제하는 것에
-  가깝다.
-
-**목표**: 두 아이디어를 이론적으로 옳은 형태로 재정의하고, 카드 A~F(오차율 밴드 진단·사후
-보정·LightGBM FICR 커스텀 목적함수·LSTM 재탐색)와 **충돌하지 않는 우선순위**로 실행 계획에
-편입한다. 두 아이디어 모두 카드 A~F를 대체하지 않는다 — **카드 A~D를 먼저 끝내고, 그 결과가
-카드 0 기준선을 넘긴 뒤 여유 자원이 있을 때** 아래 카드 G·H에 착수한다.
-
----
-
-## 카드 G. [P3] VMD 입력 피처 분해 — 범위를 좁힌 탐색 스파이크
-
-### Background & Objective
-
-`ws10`(LDAPS IDW 대표 풍속)·`gfs_ws_hub`(GFS 허브높이 외삽 풍속)는 이미 1h/3h/6h 변화량
-피처(`transformForecastFeature`)로 어느 정도의 다중 시간축 정보를 갖고 있지만, 추세와 고주파
-변동을 명시적으로 분리한 피처는 없다. 목표는 VMD로 이 두 풍속류 신호를 K개 모드로 분해해
-LightGBM/LSTM의 기존 SHAP 선별 피처셋에 **추가**하고, 카드 0 기준선(그룹1 0.6555 / 그룹2
-0.6877 / 그룹3 0.6583) 대비 검증 총점이 오르는지 확인하는 것이다. 목표는 새 모델 계열을
-만드는 것이 아니라 **기존 `LGBM_selected` 파이프라인에 피처를 더했을 때의 순수 효과**를
-측정하는 것이다.
-
-### Detailed Methodology
-
-**절대 하지 말 것 (`baseline7_idea_evaluation.md` 1-1절 근거):**
-- 타깃(발전량) 시계열을 VMD로 분해해 모드별로 자기회귀 예측하지 않는다 — 제출 불가 구조다.
-- 학습 구간 + 검증 구간을 합쳐 **한 번에** VMD를 돌리지 않는다 — 검증 구간의 스펙트럼 정보가
-  학습 구간 모드 값에 섞여 들어가는 누수다.
-
-**해야 할 것:**
-
-1. **분해 대상**: 그룹별 `ws10`(LDAPS), `gfs_ws_hub`(GFS) 두 컬럼만. 전체 127개 피처를
-   전부 분해하지 않는다(연산 비용, 다중공선성 모두 불리).
-2. **누수 차단 절차**:
-   - 학습 구간(시간순 앞 80%) 피처값은 **그 80% 구간만으로 적합한 VMD 결과**에서 가져온다.
-   - 검증 구간(뒤 20%)과 최종 평가(2025년) 구간은 **확장 윈도우(expanding window) 재적합**을
-     쓰되, 계산 비용을 감안해 **주 단위(1주일)로만 재적합**한다. 한 번 재적합한 결과를
-     다음 재적합 시점까지 그대로 쓴다 — 매 시각마다 다시 돌리지 않는다.
-   - 각 재적합 윈도우의 **가장 최근(오른쪽 끝) 지점은 경계 왜곡이 가장 크다**는 것을
-     명시적으로 알고 진행한다(완화 불가능한 구조적 한계 — Risks 참조).
-3. **파라미터**: `K`는 4/6/8 세 값, `α`는 1,000/2,000 두 값으로 그리드 6조합.
-   `vmdpy` 패키지 사용(순수 numpy/scipy 기반, 무거운 의존성 없음). **재구성 오차가 아니라
-   카드 0과 동일한 검증 총점**으로 조합을 고른다(`baseline7_idea_evaluation.md` 1-2절 경고).
-4. **모델 통합**: 새 컬럼(`vmd_ws10_mode1..K`, `vmd_gfs_ws_hub_mode1..K`)을 `datasets[group]["df"]`
-   에 병합한 뒤, Step 2(`LGBM_full`/`LGBM_selected` 학습 셀)를 그대로 재실행해 SHAP 선별
-   대상에 자연스럽게 포함시킨다. 별도의 "VMD 전용 모델"을 새로 만들지 않는다 — 기존
-   파이프라인에 피처만 추가하는 것이 이 스파이크의 전부다.
-
-### Step-by-Step Action Tasks
-
-| 순서 | Task | 선행 조건 |
-|---|---|---|
-| G-1 | `pip install vmdpy` (또는 동등 라이브러리) 가능 여부 확인, `.venv`에 설치 | 없음 |
-| G-2 | 그룹1 `ws10` 학습 구간(80%)만으로 VMD 1회 적합, K/α 6조합 재구성 오차 확인(폭주 여부만 점검) | G-1 |
-| G-3 | 검증 구간(뒤 20%)에 대해 **주 단위 확장 윈도우** 재적합 로직 구현, 경계 왜곡 크기(마지막 24시간 vs 그 이전) 정량 비교 | G-2 |
-| G-4 | `datasets[1]["df"]`에 병합, Step 2 재실행, 카드 0 기준선(0.6555) 대비 검증 총점 비교 | G-3 |
-| G-5 | 그룹1에서 유의미한 개선(+0.005 이상)이 없으면 **그룹 2·3으로 확장하지 않고 종료**, 있으면 확장 | G-4 |
-
-### Validation & Metrics
-
-- **1차 게이트**: 그룹1 `LGBM_selected` 검증 총점이 VMD 피처 추가 전(0.6555) 대비 **+0.005
-  이상** 개선되는지. 이 문턱을 넘지 못하면 이후 카드(그룹 2·3 확장, LSTM 통합)를 진행하지
-  않는다 — 탐색 비용 대비 효용이 낮다고 판단한다.
-- **2차 확인**: 카드 A의 `summarizeErrorBand`를 VMD 피처 포함/미포함 두 모델에 각각 적용해
-  `>8%` 비율이 실제로 줄었는지 확인한다(총점 개선이 NMAE 쪽에서만 온 것이 아닌지 분리).
-- **경계 왜곡 진단**: G-3에서 각 재적합 윈도우의 마지막 24시간과 그 이전 구간의 모드 값
-  분산을 비교해, 마지막 24시간이 비정상적으로 크면(예: 2배 이상) 그 구간의 VMD 피처를
-  결측 처리하고 원본 풍속 피처로 폴백하는 로직이 필요하다는 신호로 기록한다.
-
-### Risks & Fallback
-
-| 리스크 | 대응 |
+| 용어 | 주석에 붙일 쉬운 정의 |
 |---|---|
-| 경계 왜곡이 완화되지 않음(구조적 한계) | 최근 24시간 VMD 피처를 결측 처리 → 기존 원본 피처로 자동 폴백하는 가드를 G-4 병합 셀에 넣는다 |
-| 주 단위 재적합도 연산 비용이 카드 I 기준(≈34분 실행시간 예산)을 크게 초과 | 재적합 주기를 월 단위로 낮춘다. 그래도 초과하면 카드 G를 P3에서 보류(deprioritize)하고 카드 A~F만 우선 완료 |
-| G-4에서 총점 개선이 없거나 악화 | 즉시 폐기(1차 게이트가 이미 이 경우를 다룬다). VMD 컬럼을 `feature_cols`에서 제외하고 기존 파이프라인으로 복귀 |
-| `vmdpy` 설치 실패(환경 제약) | PyEMD의 CEEMDAN 등 대체 라이브러리로 1회 대체 시도, 그래도 실패하면 카드 G 전체를 보류하고 보고 |
-
-### 판정 (요약)
-
-**P3.** 카드 A~D가 카드 0 기준선을 넘긴 뒤에만 착수한다. 1차 게이트(그룹1, +0.005)를 넘지
-못하면 더 투자하지 않는다.
-
----
-
-## 카드 H. [P2] 시각대(diurnal) 오차 진단 + 저비용 차등화
-
-> 기존 카드 E("`lead_hour` 기반 오차 진단")를 대체한다. 카드 E의 "리드타임" 프레이밍은
-> `baseline7_idea_evaluation.md` 2-1절 근거로 부정확하다 — 이 데이터셋에서 `lead_hour`는
-> 대상 시각(hour-of-day)의 아핀 변환과 동일한 정보이므로, 이하 카드는 "시각대"로 정정해
-> 진행한다. 카드 E를 이미 실행했다면 결과는 그대로 유효하다(같은 축을 다른 이름으로 부른
-> 것뿐이다).
-
-### Background & Objective
-
-목표는 두 가지를 순서대로 확인하는 것이다: (1) 시간별 오차율의 밴드 분포가 시각대별로
-실제로 불균일한가, (2) 불균일하다면 **완전 분리 모델이 아니라 저비용 차등**(사후 보정·표본
-가중)만으로 그 불균일을 얼마나 완화할 수 있는가. `baseline7_idea_evaluation.md` 2-2절이
-확인했듯 `lead_hour`/`target_hour_*`/`hour_sin/cos_*` 8개 컬럼이 이미 두 모델 계열의 학습
-입력에 들어가 있으므로, "모델에 이 정보를 준다"가 아니라 **"이미 갖고 있는 정보를 목적함수
-레벨에서 더 적극적으로 쓴다"**가 이 카드의 실제 작업이다.
-
-### Detailed Methodology — 진단 매트릭스 및 차등 기준
-
-1. **시각대 구간**: `target_hour_ldaps`(1~24) 또는 `lead_hour`(12~35, 둘은 동일 정보이므로
-   해석이 쉬운 쪽을 쓴다) 기준 3구간 — 단기 `01~08시`, 중기 `09~16시`, 장기 `17~24시`.
-   구간 경계는 카드 0의 기존 표기(`단기/중기/장기`)와 맞춘다.
-2. **진단 매트릭스**: (그룹 × 모델 × 시각대) 조합마다 카드 A의 `summarizeErrorBand` 출력
-   (`≤6%`/`6~8%`/`>8%` 비율)을 계산해 하나의 표로 만든다. 총 3그룹 × best_by_group 모델 1개
-   × 3시각대 = 9행이면 충분하다(모든 모델×시각대 조합을 다 볼 필요는 없다).
-3. **차등 적용 기준**: 어떤 시각대의 `>8%` 비율이 다른 시각대 평균보다 **1.5배 이상** 크면
-   "불균일"로 판정하고 아래 저비용 차등을 적용한다. 그 미만이면 카드 H는 진단 단계에서
-   종료하고 완전 분리 모델은 시도하지 않는다(`baseline7_idea_evaluation.md` 2-4절 ROI 표의
-   (a)/(d) 행 — 데이터 손실 대비 효용이 낮다는 결론을 그대로 따른다).
-
-### Step-by-Step Action Tasks
-
-| 순서 | Task | 선행 조건 |
-|---|---|---|
-| H-1 | 카드 A의 `predictions_store`와 각 그룹 `X_valid`(또는 `datasets[group]["df"]`)의 `target_hour_ldaps`를 시간 인덱스로 정렬해 이어붙인다 | 카드 A 완료 |
-| H-2 | 위 2-2 진단 매트릭스(9행)를 계산해 표로 보고한다 | H-1 |
-| H-3 | 불균일 판정이 나오면(1.5배 기준): 카드 B의 `FicrCalibrator`를 시각대 인자를 받도록 확장(`fit(pred, actual, group, hour_bucket)`)해 시각대별 `(a, b)`를 따로 탐색 | H-2, 카드 B |
-| H-4 | 카드 C의 `makeFicrObjective` 학습 시, LightGBM `sample_weight` 인자로 `>8%` 비율이 높은 시각대 행에 1.2~1.5배 가중을 주는 버전을 추가로 학습해 비교 | H-2, 카드 C |
-| H-5 | H-3/H-4 중 더 큰 개선을 보인 쪽만 채택해 카드 F(최종 제출 반영)에 병합. 완전 분리 모델(그룹×시각대별 별도 LightGBM/LSTM)은 **H-2 결과가 2배 이상 불균일하고 H-3/H-4로도 목표를 못 채울 때만** 마지막 수단으로 검토한다 | H-3, H-4 |
-
-### Validation & Metrics
-
-- H-2 진단표의 시각대별 `>8%` 비율과 그 비율(최대/평균)을 실행 로그에 남긴다 — 이 숫자가
-  이후 모든 판단의 근거다.
-- H-3/H-4 각각 적용 전후의 그룹별 검증 총점을 카드 0 기준선과 비교한다. **두 방법 모두
-  기준선을 넘지 못하면 카드 H는 여기서 종료**하고 완전 분리 모델을 시도하지 않는다.
-- 완전 분리 모델까지 간다면(H-5의 마지막 수단), 그룹3처럼 학습 데이터가 이미 적은 그룹은
-  시각대 분리 후 표본 수가 과적합 위험 수준(연 단위 데이터 2년 × 1/3 시각대 ≈ 5,800시간)인지
-  먼저 확인한다.
-
-### Risks & Fallback
-
-| 리스크 | 대응 |
-|---|---|
-| H-2에서 불균일이 확인되지 않음(가능성 높음 — 2-2절 근거) | 카드 H를 진단 단계에서 종료. 시간 낭비 방지가 이 카드의 실질적 성과다 |
-| 시각대별 보정(H-3)이 특정 시각대에서 과적합(표본 수 부족) | `FicrCalibrator`의 격자탐색 조합 수를 줄이거나(11×11), 인접 시각대와 통합해 2구간으로 낮춘다 |
-| 완전 분리 모델까지 갔는데도 데이터 손실로 총점이 악화 | 즉시 폐기하고 H-3/H-4의 저비용 버전으로 복귀. 이 경로가 `baseline7_idea_evaluation.md` 2-4절이 예상한 결과이므로 놀라운 일이 아니다 |
-
-### 판정 (요약)
-
-**P2, 그러나 축소된 형태로.** 원안(완전 분리 모델)은 비권장. 진단(H-2) → 저비용 차등
-(H-3/H-4) 순서를 반드시 지키고, 각 단계에서 카드 0 기준선을 넘지 못하면 다음 단계로
-확대하지 않는다.
-
----
-
-## 작업 순서 갱신 (카드 G·H 포함)
-
-```
-카드 A (오차율 밴드 진단 + 예측값 저장소)
-      ↓
-카드 B (사후 보정) ── 카드 C (LightGBM FICR 커스텀 목적함수) ── 카드 D (LSTM 재탐색)   [병행 가능]
-      ↓
-카드 F (그룹별 최종 채택 + 제출 반영)  ← 여기까지가 이 문서의 핵심 우선순위(카드 0 기준선 갱신)
-      ↓
-      ├─ 카드 H (시각대 진단 → 저비용 차등)  [P2, H-2 결과에 따라 축소 실행]
-      └─ 카드 G (VMD 입력 피처 스파이크)      [P3, 1차 게이트 미달 시 즉시 종료]
-```
-
-카드 G·H는 **카드 A~D·F가 카드 0 기준선을 이미 넘긴 뒤**, 그리고 여유 자원이 있을 때만
-착수한다. 두 카드 모두 "판정" 절이 명시한 게이트를 넘지 못하면 그 자리에서 종료하고 다음
-카드로 넘어가지 않는다 — 이 문서의 목적은 새 기법을 최대한 많이 시도하는 것이 아니라
-카드 0의 실제 제출 총점(0.6672)을 올리는 것이다.
+| FICR | 오차가 작을수록 발전량에 더 높은 정산단가를 적용하는 점수 |
+| NMAE | 설비용량으로 나눈 평균 절대 오차. 값이 작을수록 좋다 |
+| 기준선(baseline) | 새 방법과 비교하는 현재 최고 결과 |
+| 검증 구간(hold-out) | 학습에 사용하지 않고 성능을 확인하는 뒤 20% 데이터 |
+| 평가 구간(test) | 실제 제출을 만드는 구간. 정답을 모르므로 튜닝에 쓰지 않는다 |
+| 데이터 누수(leakage) | 미래나 정답 정보를 학습·튜닝에 미리 섞는 실수 |
+| 보정(calibration) | 예측값에 간단한 변환을 적용해 실제값에 더 가깝게 맞추는 작업 |
+| 목적함수(objective) | 모델이 학습 중 더 좋게 만들려고 최소화·최대화하는 기준 |
+| 웜업(warm-up) | 본 학습 전에 쉬운 설정으로 모델을 안정시키는 준비 단계 |
+| 하이퍼파라미터(HPO) | 학습 전에 사람이 정하는 설정값을 시험하는 과정 |
+| GWO | 여러 후보 설정을 늑대 무리처럼 움직이며 탐색하는 최적화 방법 |
+| VMD / IMF | 시계열을 느린 흐름과 빠른 흔들림으로 나누는 방법 / 그 결과 조각 |
+| mRMR | 정답과 관련이 크면서 서로 비슷하지 않은 피처를 고르는 방법 |
+| 앙상블(blending) | 여러 모델의 예측을 가중 평균해 하나로 합치는 방법 |
+| 폴백(fallback) | 새 방법이 실패하거나 불안정할 때 기존 방법으로 돌아가는 처리 |
+| `fit` / `transform` | `fit`은 규칙을 데이터에서 배우는 단계, `transform`은 배운 규칙을 적용하는 단계 |
