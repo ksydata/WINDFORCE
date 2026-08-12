@@ -67,7 +67,7 @@ FICR 기여분 = 0.5 × (0.6398 − 0.4171) = 0.1114   (86%)
 
 | 고도화 전략 | 대응 카드 | 핵심 |
 |---|---|---|
-| ① 오차율 밴드 진단 + 예측값 저장소 + 자동 분기 | **카드 A** | `predictions_store`, `summarizeErrorBand`, `recommendAction` |
+| ① 오차율 구간 진단 + 예측값 저장소 + 자동 분기 | **카드 A** | `predictions_store`, `summarizeErrorBand`, `recommendAction` |
 | ② FICR-aware 커스텀 목적함수(LightGBM) + LSTM 정렬 | **카드 C** | `makeFicrObjective`(2단계 웜업 포함), `ScoreLossFunction`과의 설계 원칙 정렬 |
 | ③ VMD 입력 분해 + IMF 특징 선택(mRMR/PCC-GRA) | **카드 G** | 입력(NWP) 한정 VMD, mRMR 축소 → 기존 SHAP 선별 |
 | ④ 지능형 HPO(메타휴리스틱/베이지안) | **카드 D** | GWO(1순위, 순수 numpy) 기반 `loss_k`/`regression_weight` 연속 탐색 |
