@@ -1,6 +1,7 @@
 # baseline5_howto 후속 개선 작업 지시서
 
-> 작성일: 2026-08-09 · 선행 산출물: `BASELINE/baseline5_howto.ipynb`
+> 작성일: 2026-08-09 · 최종 수정: 2026-08-12 17:35 (카드 H~K 추가 — 문서 하단)
+> 선행 산출물: `BASELINE/baseline5_howto.ipynb`
 > 이 문서는 **그대로 구현 가능한 작업 카드** 형식이다. 각 카드는 독립적으로 착수할 수 있고,
 > 코드 스타일은 반드시 [`MD/coding_convention.md`](coding_convention.md)를 따른다.
 
@@ -322,3 +323,277 @@ day-ahead 구조이며, `lead_hour`는 12~35 범위를 가진다. 리드타임�
   (`group, model_name, n_features, nmae, ficr, score, mae, rmse`)로 저장해 리더보드에서 재집계 가능하게 한다.
 - 제출 파일은 8,760행 · 컬럼 순서 일치 · NaN 없음 · 음수 없음 · 설비용량 이하를 `assert`로 검증한다.
 - **Persistence는 비교 기준으로만 쓴다.** 직전 실제값을 사용하므로 2025년 일괄 제출에는 사용할 수 없다.
+
+---
+---
+
+# 추가 지시 (2026-08-12 17:35 작성)
+
+> 대상: `BASELINE/baseline_7.ipynb` 실행 환경 진단에서 나온 항목.
+> 위 카드 A~G(모델 성능)와 **성격이 다르다.** 여기 카드 H~K는 **환경·실행시간·위생** 문제이며
+> 점수를 올리지 않는다. 대신 **카드 B~G를 돌릴 수 있게 만드는 선행 조건**이다.
+>
+> ### 이 문서를 받는 작업자에게 (Sonnet 실행 전제)
+>
+> 1. **아래 수치는 이미 실측했다. 다시 측정하지 마라.** 벤치마크 재실행은 시간 낭비다.
+> 2. **파일 위치는 줄 번호가 아니라 문자열로 찾아라.** 노트북은 실행하면 셀 인덱스가 밀린다.
+>    편집 직전에 반드시 파일을 다시 읽고, **모든 편집을 끝낸 뒤에** 실행한다.
+> 3. **새 파일을 만들지 마라.** 각 카드에 명시된 파일만 수정한다. 새 헬퍼 모듈 금지.
+> 4. 카드 하나를 끝낼 때마다 그 카드의 "검증" 명령을 실제로 돌리고 **출력을 붙여서 보고**한다.
+>    "수정했습니다"만으로는 완료가 아니다.
+> 5. 판단이 필요한 지점은 카드 안에 **이미 결정해 두었다.** 대안을 탐색하지 말고 적힌 대로 한다.
+>    적힌 대로 했는데 검증이 실패하면 거기서 멈추고 보고한다.
+
+## 실측 근거 (2026-08-12, 로컬 Windows 11 · 12코어 · torch 2.13.0+cpu)
+
+`baseline_7.ipynb` 전체 실행시간 분해:
+
+| 셀 | 내용 | 실측 시간 | 비중 |
+|---|---|---|---|
+| Step 1 전처리 (`prep_builder.buildAll()`) | LDAPS+GFS IDW | **52초** (1회성, 이후 캐시) | 1% |
+| Step 2 LightGBM 9회 + SHAP 6회 | 피처 선별 | **~0.5분** | 0.5% |
+| **Step 3 LSTM 9개 (3그룹 × v1/v2/v3)** | 학습 | **~87분** | **98%** |
+
+LSTM 세부 — **연산량 병목이 아니다.** 피처를 45개 → 127개로 늘려도 에폭 시간이 6.7초 → 7.1초로 거의 같다.
+실제 원인은 `batch_size = 64`(에폭당 328배치)와 12스레드 조합이다. 배치·스레드 격자 실측:
+
+| threads | batch_size | 에폭 | LSTM 9개 × 80에폭 |
+|---|---|---|---|
+| **12** | **64** | **8.18초** | **87분** ← 현재 기본값 |
+| 8 | 64 | 5.50초 | 59분 |
+| 4 | 512 | 4.43초 | 47분 |
+| **8** | **256** | **3.18초** | **34분** ← 권장 |
+
+---
+
+## 카드 H. [P0] Jupyter 커널 인터프리터 고정
+
+### 문제
+
+`.venv/share/jupyter/kernels/python3/kernel.json`의 `argv[0]`이 절대경로가 아니라 맨 이름이었다.
+
+```json
+"argv": ["python", "-m", "ipykernel_launcher", "-f", "{connection_file}"]
+```
+
+Jupyter가 커널을 띄울 때 이 `python`을 PATH로 해석한다. `.venv\Scripts`가 앞에 없으면
+전역 파이썬(`C:\Users\<user>\AppData\Local\Programs\Python\Python314`)이 잡힌다. 그 전역 파이썬에는
+`ipykernel`·`pandas`·`numpy`·`torch`·`sklearn`이 **있어서 커널은 정상적으로 뜨고**,
+`lightgbm`·`shap`만 없어서 Step 0 임포트 셀에서 `ModuleNotFoundError`로 죽는다.
+"커널이 죽었다"가 아니라 "패키지만 없다"로 보이기 때문에 원인 추적이 오래 걸린다.
+
+코랩에서 되는 이유는 인터프리터가 하나뿐이라 이 분기 자체가 없기 때문이다. 로컬만의 문제다.
+
+### 상태
+
+**`kernel.json`은 2026-08-12 17:28에 이미 수정·검증 완료했다.** 아래는 재발 방지용 잔여 작업이다.
+`.venv`를 다시 만들면 `argv`가 맨 이름으로 되돌아가므로 노트북 자체에 가드가 있어야 한다.
+
+### 구현 단계
+
+1. `BASELINE/baseline_7.ipynb`에서 **문자열 `import lightgbm as lgb`가 있는 셀을 찾는다**(인덱스로 찾지 말 것).
+   그 셀의 **맨 위**, 모든 서드파티 import보다 **앞**에 아래 블록을 넣는다.
+
+   ```python
+   import sys
+   from pathlib import Path
+
+   EXPECTED_VENV = "WINDFORCE/.venv"
+   # 이 노트북이 돌아야 하는 가상환경 경로 조각
+
+   if EXPECTED_VENV not in Path(sys.executable).as_posix():
+       raise RuntimeError(
+           f"잘못된 커널입니다: {sys.executable}\n"
+           f"VS Code 우상단 커널 선택에서 WINDFORCE/.venv를 고르세요.\n"
+           f"주피터랩이면 kernel.json의 argv[0]이 절대경로인지 확인하세요."
+       )
+       # 전역 파이썬으로 뜬 커널을 임포트 실패 전에 명확한 메시지로 차단한다
+   ```
+
+2. 같은 블록 바로 아래에, 임포트가 끝난 뒤 실행 로그용으로 한 줄 추가한다.
+
+   ```python
+   print(f"kernel: {sys.executable}")
+   # 어느 인터프리터로 돌았는지 실행 기록에 남긴다
+   ```
+
+3. **`BASELINE/baseline_6.ipynb`와 `BASELINE/baseline_5_howto.ipynb`에도 같은 블록을 넣는다.**
+   세 노트북 모두 같은 커널을 쓴다.
+
+### 검증
+
+```bash
+# (1) kernel.json이 절대경로인지
+python -c "import json;print(json.load(open(r'.venv/share/jupyter/kernels/python3/kernel.json'))['argv'][0])"
+# 기대: D:\workspaces\WINDFORCE\.venv\Scripts\python.exe   (맨 이름 'python'이면 실패)
+
+# (2) 그 커널이 실제로 lightgbm/shap을 잡는지
+.venv/Scripts/python.exe -c "import lightgbm,shap;print(lightgbm.__version__,shap.__version__)"
+# 기대: 4.7.0 0.52.0
+```
+
+### 하지 말 것
+
+- 전역 파이썬에 `lightgbm`·`shap`을 설치해서 해결하지 마라. 증상만 가리고 버전이 갈라진다.
+- `sys.path` 조작으로 우회하지 마라. 인터프리터 자체가 다른 문제라 효과가 없다.
+
+---
+
+## 카드 I. [P1] LSTM 실행시간 87분 → 34분
+
+### 문제
+
+Step 3이 전체 실행시간의 98%다. 카드 B~E는 전부 "고치고 다시 돌려서 총점을 비교"하는 작업인데,
+1회 87분이면 반복 자체가 불가능하다. **카드 B 착수 전에 이 카드를 먼저 끝내라.**
+
+### 중요 — 결과가 바뀐다
+
+배치 크기는 하이퍼파라미터다. `batch_size`를 바꾸면 **점수가 달라진다.**
+따라서 아래 I-1(무해)과 I-2(결과 변경)를 **반드시 분리해서** 적용한다.
+**기존 87분 실행의 점수와 새 점수를 같은 리더보드 표에 섞지 마라.**
+
+### I-1. 스레드 수 조정 — 결과 불변, 87분 → 59분
+
+`torch`가 기본으로 12스레드(전 코어)를 쓰는데, 배치 64에서는 스레드 동기화 비용이 연산량을 넘어선다.
+실측상 12스레드가 8스레드보다 **느리다**(8.18초 vs 5.50초).
+
+`baseline_7.ipynb`에서 **문자열 `torch.manual_seed(SEED)`가 있는 셀을 찾아** 그 아래에 추가한다.
+
+```python
+torch.set_num_threads(8)
+# 12코어 전부를 쓰면 배치 64 구간에서 스레드 동기화 비용이 연산량을 넘어선다.
+# 실측: 12스레드 8.18초/epoch vs 8스레드 5.50초/epoch
+```
+
+모델 파라미터가 아니므로 점수는 바뀌지 않는다. 부동소수 누적 순서 차이로 마지막 자리 수준의
+미세한 변동은 있을 수 있다.
+
+### I-2. 배치 크기 조정 — 결과 변경, 59분 → 34분
+
+**패키지 파일은 건드리지 마라.** `VersionedLSTMPipeline.__init__`이 이미 `batch_size`를 인자로
+노출하고 있고(`Windforce/Modeling/LSTMPipelineVersions.py:133`), `make_lstm_pipeline(**kwargs)`가
+그대로 전달한다. 노트북의 `MODEL_PARAMS` 딕셔너리만 고치면 된다.
+
+`baseline_7.ipynb`에서 **문자열 `MODEL_PARAMS = {`를 찾아** 아래 두 줄을 추가한다.
+
+```python
+MODEL_PARAMS = {
+    "epochs": 80,
+    "warmup_epochs": 15,
+    "loss_k": 40.0,
+    "regression_weight": 0.75,
+    "patience": 12,
+    "batch_size": 256,
+    # 64 → 256으로 에폭당 스텝을 1/4로 줄인다. 실측 5.50초 → 3.18초/epoch
+    "lr": 2e-3,
+    # 배치가 4배가 되면 스텝당 그래디언트 잡음이 줄어드는 만큼 학습률을 sqrt(4)=2배로 올린다.
+    # 이걸 빼면 같은 epoch 수에서 덜 수렴해 점수가 떨어진다
+    "random_state": SEED,
+}
+```
+
+### 검증
+
+```
+[그룹1][v1] epoch=NN | NMAE=0.xxxx FICR=0.xxxx 총점=0.xxxx
+```
+
+1. **속도**: Step 3 셀 전체가 **40분 이내**에 끝나야 한다. 60분을 넘으면 I-1이 안 먹은 것이다.
+2. **점수**: 9개 모델의 총점이 **기존 대비 그룹별 0.02 이상 떨어지면 채택하지 않는다.**
+   그 경우 `batch_size`를 128, `lr`을 1.4e-3으로 낮춰 한 번만 더 시도하고,
+   그래도 떨어지면 **I-1만 남기고 I-2를 되돌린 뒤 보고한다.**
+3. `pipeline.best_epoch`이 대부분 80에 붙어 있으면 조기종료가 안 걸린 것이니 그 사실을 보고한다.
+
+---
+
+## 카드 J. [P2] 구버전 `LSTMPipeline`의 하드코딩 배치 노출
+
+### 문제
+
+`Windforce/Modeling/LSTMPipeline.py`는 배치 크기가 두 군데 하드코딩되어 있다.
+
+- `181번 줄` — `trainLoader = DataLoader(trainDs, batch_size=64, shuffle=True)`
+- `305번 줄` — `testLoader = DataLoader(testDs, batch_size=64, shuffle=False)`
+
+`baseline_7`은 `VersionedLSTMPipeline`을 쓰므로 영향이 없지만, **baseline 5·6이 이 클래스를 쓴다.**
+카드 D(LSTM 재평가)에서 같은 87분 문제를 다시 만나게 된다.
+
+### 구현 단계
+
+`Windforce/Modeling/LSTMPipeline.py` **이 파일 하나만** 수정한다.
+
+1. `__init__`(126번 줄 근처) 시그니처 **맨 끝**에 인자를 추가한다. 기존 인자 순서는 바꾸지 마라.
+
+   ```python
+   batch_size: int = 64,
+   # 기본값 64는 기존 호출부의 동작을 그대로 보존하기 위한 것이다. 절대 바꾸지 마라
+   ```
+
+2. `__init__` 본문에 `self.batch_size = batch_size`를 추가한다.
+3. 181번·305번 줄의 `batch_size=64`를 `batch_size=self.batch_size`로 바꾼다.
+
+### 검증
+
+```bash
+.venv/Scripts/python.exe -c "
+import sys; sys.path.insert(0,'D:/workspaces/WINDFORCE')
+from Windforce.Modeling import LSTMPipeline
+p = LSTMPipeline(capacity_kw=1000.0)
+assert p.batch_size == 64, '기본값이 64가 아니면 기존 결과가 재현되지 않는다'
+assert LSTMPipeline(capacity_kw=1000.0, batch_size=256).batch_size == 256
+print('OK: 기본값 보존 + 인자 주입 동작')
+"
+```
+
+### 하지 말 것
+
+- 기본값을 256으로 바꾸지 마라. baseline 5·6의 기존 점수가 조용히 재현 불가능해진다.
+  **기본값 유지 + 인자 노출**이 이 카드의 전부다.
+
+---
+
+## 카드 K. [P3] 리포지토리 위생
+
+세 항목 모두 독립이고 각각 5분 이내다.
+
+1. **`prep/`가 `.gitignore`에 없다.** 현재 `git status`에 `?? prep/`로 잡히며 약 92MB다.
+   `git add .` 한 번이면 생성물 캐시가 통째로 커밋된다.
+   `.gitignore`의 `# Jupyter Notebook` 섹션 **위에** 추가한다.
+
+   ```gitignore
+   # 전처리 생성물 캐시 (buildAll()이 언제든 재생성한다. 52초 소요)
+   prep/
+   ```
+
+2. **`lightgbm` 4.7의 `eval_set` deprecation.** `BASELINE/baseline_7.ipynb`와
+   `BASELINE/baseline_5_howto.ipynb`의 `model.fit(...)` 호출이 대상이다.
+   현재 노트북이 `warnings.filterwarnings("ignore")`로 경고를 가리고 있어 조용히 통과하지만
+   다음 메이저에서 깨진다. 각 1군데씩, 총 2군데다. **두 노트북의 표기가 다르니 주의한다** —
+   `baseline_7`은 `eval_set=[(...)]`, `baseline_5_howto`는 `eval_set = [(...)]`(공백 있음)이다.
+
+   ```python
+   eval_set = [(X_valid, y_valid / capacity_kw)],   # 변경 전
+   eval_X = X_valid, eval_y = y_valid / capacity_kw,   # 변경 후
+   ```
+
+   **바꾼 뒤 반드시 LightGBM 셀을 재실행해 총점이 그대로인지 확인한다.**
+
+3. **`torch`가 `2.13.0+cpu` 빌드다.** 로컬에서는 GPU를 쓸 수 없다.
+   이건 버그가 아니라 사실 확인이며, 카드 I의 34분이 **CPU 기준 하한**이라는 뜻이다.
+   더 줄이려면 코랩 GPU 런타임에서 Step 3만 돌리는 쪽을 검토한다. 이번 작업 범위 밖이다.
+
+---
+
+## 카드 H~K 작업 순서
+
+```
+카드 H (커널 고정)   ← 이게 안 되면 노트북이 아예 안 돌아간다. 가장 먼저.
+      ↓
+카드 I (실행시간 87분 → 34분)   ← 카드 B~G의 반복 실험을 가능하게 만드는 전제
+      ↓
+카드 K (리포 위생)   ← 커밋 사고 방지. 짧으니 여기서 끊고 커밋한다.
+      ↓
+카드 J (구버전 배치 노출)   ← 카드 D 착수 직전에만 필요하다. 급하지 않다.
+```
+
+카드 H·I를 끝내고 **커밋한 뒤에** 위쪽 카드 B(FICR 최적화)로 넘어간다.

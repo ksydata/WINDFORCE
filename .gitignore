@@ -4,6 +4,9 @@ TEST/*.csv
 TRAIN/
 TEST/
 
+# 전처리 생성물 캐시 (buildAll()이 재생성한다.)
+prep/
+
 # Python
 __pycache__/
 *.py[cod]
