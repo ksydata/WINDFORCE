@@ -165,7 +165,7 @@ X_train_sc = scaler.transform(X_train[:, :len(test_num_cols)])
 
 ### J. 앙상블
 
-- 위 개선들을 거친 뒤에도, 최종적으로 Persistence·GBM·LSTM(잔차 기반)을 그룹별 최적 가중치로 블렌딩하면 단일 모델보다 안정적인 총점 개선이 기대됩니다.
+- 위 개선들을 거친 뒤에도, 최종적으로 Persistence·GBM·LSTM(잔차 기반)을 그룹별 최적 가중치로 블렌딩하면 단일 모델보다 안정적인 총점 개선이 기대됩니다. 
 
 ---
 
