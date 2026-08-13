@@ -1,0 +1,17 @@
+# baseline_8 실행 환경 (Python 3.14, CPU)
+numpy==2.4.6
+pandas==3.0.5
+scipy==1.18.0
+scikit-learn==1.9.0
+matplotlib==3.11.1
+
+lightgbm==4.7.0
+shap==0.52.0
+torch==2.13.0
+
+# Jupyter notebook 실행
+jupyterlab==4.6.2
+ipykernel==7.3.0
+
+# 선택 부록(VMD+mRMR)을 활성화할 때만 추가:
+# vmdpy==0.2
