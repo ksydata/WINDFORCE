@@ -10,8 +10,8 @@ from typing import Any, ClassVar, Iterable, Mapping
 import numpy as np
 import pandas as pd
 
-from ..utils.spatial_utils import KPX_GROUPS, PreprocessingError
-from ..utils.time_utils import select_group
+from ..UTILS.spatial_utils import KPX_GROUPS, PreprocessingError
+from ..UTILS.time_utils import select_group
 
 
 RATED_CAPACITY_KW = {

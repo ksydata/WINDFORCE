@@ -8,7 +8,7 @@ from .FeatureEngineer import BasePreprocessor
 from .GFSFeatureEngineer import GFSFeatureEngineer
 from .LDAPSFeatureEngineer import LDAPSFeatureEngineer
 from .SCADAFeatureEngineer import SCADAFeatureEngineer
-from ..utils.spatial_utils import KPX_GROUPS
+from ..UTILS.spatial_utils import KPX_GROUPS
 
 
 class PreprocessorFactory:

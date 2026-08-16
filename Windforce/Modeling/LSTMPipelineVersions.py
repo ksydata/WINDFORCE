@@ -203,6 +203,19 @@ class VersionedLSTMPipeline:
         # stale: 개선이 없었던 연속 epoch 수 (patience와 비교해 조기종료 판단)
         self.history = []
 
+        # 검증 DataLoader를 에폭 루프 밖에서 한 번만 생성한다.
+        # self.predict()는 호출마다 Dataset·DataLoader를 재생성하므로, 인라인 추론으로 대체한다.
+        _val_loader = None
+        _y_val_arr = None
+        if X_val is not None and y_val is not None and len(X_val) > self.seq_len:
+            _dummy = np.zeros(len(X_val), dtype=np.float32)
+            _val_loader = DataLoader(
+                _SequenceDataset(X_val, _dummy, self.seq_len),
+                batch_size=self.batch_size,
+                shuffle=False,
+            )
+            _y_val_arr = np.asarray(y_val)[self.seq_len:]
+
         for epoch in range(self.epochs):
             self.model.train(); losses = []
             # 학습모드 전환 + 이번 epoch의 배치별 loss를 모을 리스트 초기화
@@ -226,11 +239,17 @@ class VersionedLSTMPipeline:
 
             val_score = np.nan
             # 검증 데이터가 없으면 이후 로직에서 np.isfinite(val_score)가 False가 되어 학습loss 기준으로 대체됨
-            if X_val is not None and y_val is not None and len(X_val) > self.seq_len:
-                pred = self.predict(X_val, y_val)
-                yt = np.asarray(y_val)[self.seq_len:]
-                # SequenceDataset이 앞쪽 seq_len개 시점을 버리므로 정답도 동일하게 잘라 인덱스를 맞춤
-                val_score = _score(metrics, yt, pred, self.capacity_kw) if metrics is not None else -float(np.mean(np.abs(yt - pred)))
+            # 워밍업 구간은 SmoothL1만 쓰므로 검증 추론을 건너뛰고 학습 loss로 모니터링한다.
+            if _val_loader is not None and epoch >= self.warmup_epochs:
+                self.model.eval()
+                _preds: list = []
+                with torch.no_grad():
+                    for xb, _ in _val_loader:
+                        _preds.extend(
+                            (self.model(xb).cpu().numpy() * self.capacity_kw).tolist()
+                        )
+                _pred_arr = np.asarray(_preds, dtype=np.float32)
+                val_score = _score(metrics, _y_val_arr, _pred_arr, self.capacity_kw) if metrics is not None else -float(np.mean(np.abs(_y_val_arr - _pred_arr)))
                 # metrics가 있으면 대회 지표 기반 점수, 없으면 MAE의 음수(클수록 좋게 부호 통일)
 
             monitor = val_score if np.isfinite(val_score) else -float(np.mean(losses))

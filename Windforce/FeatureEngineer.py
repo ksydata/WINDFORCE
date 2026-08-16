@@ -43,7 +43,7 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
-from .utils.spatial_utils import compute_group_weight
+from .UTILS.spatial_utils import compute_group_weight
 
 
 KPX_GROUPS = ("kpx_group_1", "kpx_group_2", "kpx_group_3")

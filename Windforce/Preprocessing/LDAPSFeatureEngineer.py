@@ -20,19 +20,19 @@ from typing import ClassVar
 import pandas as pd
 
 from .FeatureEngineer import BasePreprocessor
-from ..utils.spatial_utils import (
+from ..UTILS.spatial_utils import (
     IDW_K,
     IDW_POWER,
     PreprocessingError,
     compute_group_weight,
     transform_to_group_feature,
 )
-from ..utils.time_utils import (
+from ..UTILS.time_utils import (
     transform_cyclic_time,
     transform_forecast_diff,
     transform_group_time_feature,
 )
-from ..utils.wind_utils import (
+from ..UTILS.wind_utils import (
     calculate_air_density,
     calculate_wind_power_density,
     compute_wind_direction,
